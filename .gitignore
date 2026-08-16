@@ -1,9 +1,24 @@
-﻿__pycache__/
+# Python
+.venv/
+__pycache__/
 *.py[cod]
 .pytest_cache/
-.venv/
-.env
+*.egg-info/
+build/
+dist/
+
+# Local browser/runtime state - never commit these
 .browser-profile/
-artifacts/
+.ms-playwright/
+.tmp/
+artifacts/*
+!artifacts/.gitkeep
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+
+# Logs and packaged archives
 *.log
-.tmp_*
+*.zip
