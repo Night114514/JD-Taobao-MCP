@@ -1,8 +1,8 @@
-# 将路径替换为你本机的绝对路径。Windows TOML 路径建议使用正斜杠。
+# Replace <PROJECT_DIR> with the absolute path to this project.
 [mcp_servers.jd_taobao_browser]
-command = "C:/Users/俞昊楠/Desktop/jd-taobao-browser-mcp/.venv/Scripts/python.exe"
-args = ["C:/Users/俞昊楠/Desktop/jd-taobao-browser-mcp/server.py"]
-cwd = "C:/Users/俞昊楠/Desktop/jd-taobao-browser-mcp"
+command = "<PROJECT_DIR>/.venv/Scripts/python.exe"
+args = ["<PROJECT_DIR>/server.py"]
+cwd = "<PROJECT_DIR>"
 enabled = true
 required = false
 startup_timeout_sec = 30

@@ -1,9 +1,9 @@
 {
   "mcpServers": {
     "jd-taobao-browser": {
-      "command": "C:\\Users\\俞昊楠\\Desktop\\jd-taobao-browser-mcp\\.venv\\Scripts\\python.exe",
+      "command": "<PROJECT_DIR>\\.venv\\Scripts\\python.exe",
       "args": [
-        "C:\\Users\\俞昊楠\\Desktop\\jd-taobao-browser-mcp\\server.py"
+        "<PROJECT_DIR>\\server.py"
       ],
       "env": {
         "PLAYWRIGHT_HEADLESS": "false",

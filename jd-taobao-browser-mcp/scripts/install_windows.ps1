@@ -39,7 +39,7 @@ $pythonArgs = if ($python.Length -gt 1) { $python[1..($python.Length - 1)] } els
 Invoke-Checked $python[0] ($pythonArgs + @("-c", "import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)"))
 Invoke-Checked $python[0] ($pythonArgs + @("-m", "venv", ".venv"))
 Invoke-Checked .\.venv\Scripts\python.exe @("-m", "pip", "install", "--upgrade", "pip")
-Invoke-Checked .\.venv\Scripts\python.exe @("-m", "pip", "install", "-e", ".[dev]")
+Invoke-Checked .\.venv\Scripts\python.exe @("-m", "pip", "install", "-e", ".")
 Invoke-Checked .\.venv\Scripts\python.exe @("-m", "playwright", "install", "chromium")
 
 if (-not (Test-Path .env)) {
@@ -50,5 +50,5 @@ if (-not (Select-String -Path .env -Pattern "^PLAYWRIGHT_BROWSERS_PATH=" -Quiet)
     Add-Content -Path .env -Value "PLAYWRIGHT_BROWSERS_PATH=.ms-playwright"
 }
 
-Write-Host "Install complete. Run tests with: .\.venv\Scripts\python.exe -m pytest"
+Write-Host "Install complete."
 Write-Host "Local MCP debug command: .\.venv\Scripts\python.exe server.py"

@@ -15,11 +15,6 @@ dependencies = [
   "python-dotenv>=1.0,<2",
 ]
 
-[project.optional-dependencies]
-dev = [
-  "pytest>=8.0,<9",
-  "pytest-asyncio>=0.24,<1",
-]
 
 [project.scripts]
 jd-taobao-browser-mcp = "server:main"
@@ -28,6 +23,3 @@ jd-taobao-browser-mcp = "server:main"
 packages = ["jd_taobao_mcp"]
 include = ["server.py"]
 
-[tool.pytest.ini_options]
-pythonpath = ["."]
-testpaths = ["tests"]
