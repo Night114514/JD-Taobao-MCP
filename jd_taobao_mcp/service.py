@@ -3,12 +3,12 @@ from __future__ import annotations
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote, quote_plus, urlparse
+from urllib.parse import parse_qs, quote, quote_plus, urlencode, urlparse
 
 from .browser import BrowserController
 from .config import Settings
 from .extractors import extract_jd_search, extract_product_detail, extract_taobao_search
-from .safety import page_requires_user_verification
+from .safety import ensure_allowed_url, page_requires_user_verification
 
 
 class ShoppingBrowserService:
@@ -111,9 +111,11 @@ class ShoppingBrowserService:
         }
 
     async def get_product_detail(self, url: str) -> dict[str, Any]:
+        original_url = ensure_allowed_url(url)
         platform = platform_from_url(url)
         browser = self._browser_for_platform(platform)
-        nav = await browser.navigate(url)
+        detail_url = _canonical_detail_url(original_url)
+        nav = await browser.navigate(detail_url)
         async with browser.lock:
             page = await browser.get_page()
             body_text = ""
@@ -124,6 +126,7 @@ class ShoppingBrowserService:
                 return {
                     "success": False,
                     "platform": platform,
+                    "original_url": original_url,
                     "url": page.url,
                     "product_url": page.url,
                     "requires_user_verification": True,
@@ -133,11 +136,14 @@ class ShoppingBrowserService:
                     ),
                 }
             await self._prepare_product_detail_page(page, platform)
-            detail = await extract_product_detail(page, platform)
+            detail = await extract_product_detail(
+                page, platform, original_url=original_url
+            )
         _apply_detail_output_contract(detail)
         detail.update(
             {
                 "success": True,
+                "original_url": original_url,
                 "requires_user_verification": False,
                 "verification_warning": requires_verification
                 or nav.get("requires_user_verification", False),
@@ -251,23 +257,61 @@ class ShoppingBrowserService:
         )
 
     async def _prepare_taobao_detail_page(self, page: Any) -> None:
-        await self._click_first_available(
-            page,
-            (
-                "text=/^(参数|商品参数|宝贝参数|规格参数)$/",
-                "button:has-text('参数')",
-                "a:has-text('参数')",
-                "[class*='parameter' i]",
-                "[class*='params' i]",
-            ),
+        async def click_visible_exact(label: str) -> bool:
+            for _ in range(12):
+                locator = page.get_by_text(label, exact=True)
+
+                try:
+                    count = await locator.count()
+                except Exception:
+                    count = 0
+
+                for index in range(min(count, 12)):
+                    node = locator.nth(index)
+
+                    try:
+                        if not await node.is_visible():
+                            continue
+
+                        await node.scroll_into_view_if_needed()
+                        await page.wait_for_timeout(
+                            self.settings.action_delay_ms
+                        )
+                        await node.click(timeout=3000)
+                        await page.wait_for_timeout(
+                            self.settings.action_delay_ms
+                        )
+                        return True
+                    except Exception:
+                        continue
+
+                try:
+                    await page.mouse.wheel(0, 700)
+                    await page.wait_for_timeout(
+                        self.settings.action_delay_ms
+                    )
+                except Exception:
+                    break
+
+            return False
+
+        try:
+            await page.evaluate("window.scrollTo(0, 0)")
+            await page.wait_for_timeout(
+                self.settings.action_delay_ms
+            )
+        except Exception:
+            pass
+
+        # Mount the real review content first.
+        await click_visible_exact(
+            "\u7528\u6237\u8bc4\u4ef7"
         )
-        await self._click_first_available(
-            page,
-            (
-                "text=/^(评价|宝贝评价|累计评价)$/",
-                "button:has-text('评价')",
-                "a:has-text('评价')",
-            ),
+
+        # Then mount/show the parameter content.
+        # Current Taobao keeps the review DOM mounted afterwards.
+        await click_visible_exact(
+            "\u53c2\u6570\u4fe1\u606f"
         )
 
     async def _click_first_available(
@@ -370,6 +414,35 @@ class ShoppingBrowserService:
                     pass
             return {**nav, "url": page.url}
 
+
+def _canonical_detail_url(url: str) -> str:
+    """Normalize supported Taobao detail URLs to the full desktop detail page."""
+    parsed = urlparse(url)
+    host = (parsed.hostname or "").lower()
+
+    supported = (
+        (host == "item.taobao.com" and parsed.path == "/item.htm")
+        or
+        (host == "new.m.taobao.com" and parsed.path == "/detail.htm")
+    )
+
+    if not supported:
+        return url
+
+    query = parse_qs(parsed.query)
+
+    item_id = (query.get("id") or [None])[0]
+    sku_id = (query.get("skuId") or [None])[0]
+
+    if not item_id:
+        return url
+
+    canonical = f"https://item.taobao.com/item.htm?id={item_id}"
+
+    if sku_id:
+        canonical += f"&skuId={sku_id}"
+
+    return canonical
 
 def _validate_platform(platform: str) -> str:
     normalized = platform.strip().lower()
