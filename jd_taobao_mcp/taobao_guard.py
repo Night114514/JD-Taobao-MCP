@@ -7,12 +7,12 @@ import time
 from pathlib import Path
 from urllib.parse import urlparse
 
-from .safety import SafetyError
+from .safety import SafetyError, is_taobao_url
 
 
 def is_taobao_auth_url(url: str) -> bool:
     parsed = urlparse(url)
-    host = (parsed.hostname or "").lower()
+    host = (parsed.hostname or "").lower().rstrip(".")
     path = parsed.path.lower()
 
     return host in {
@@ -21,7 +21,7 @@ def is_taobao_auth_url(url: str) -> bool:
         "passport.taobao.com",
         "passport.tmall.com",
     } or (
-        host.endswith(".taobao.com")
+        is_taobao_url(url)
         and path.startswith(("/member/login", "/login"))
     )
 

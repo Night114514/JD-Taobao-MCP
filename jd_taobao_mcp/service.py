@@ -3,12 +3,13 @@ from __future__ import annotations
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, quote, quote_plus, urlencode, urlparse
+from urllib.parse import parse_qs, quote, quote_plus, urlencode, urljoin, urlparse
 
 from .browser import BrowserController
 from .config import Settings
 from .extractors import extract_jd_search, extract_product_detail, extract_taobao_search
-from .safety import ensure_allowed_url, page_requires_user_verification
+from .safety import SafetyError, ensure_allowed_url, page_requires_user_verification
+from .taobao_guard import is_taobao_auth_url
 
 
 class ShoppingBrowserService:
@@ -53,8 +54,10 @@ class ShoppingBrowserService:
             page = await browser.get_page()
             # Safe mode: do not scroll Taobao search results.
             if platform == "jd":
+                _ensure_page_platform(page, platform)
                 await page.mouse.wheel(0, 900)
                 await page.wait_for_timeout(self.settings.action_delay_ms)
+            _ensure_page_platform(page, platform)
             body_text = ""
             if await page.locator("body").count():
                 body_text = await page.locator("body").inner_text(timeout=5_000)
@@ -76,11 +79,13 @@ class ShoppingBrowserService:
                     "detail_output_contract": _detail_output_contract(platform),
                 }
 
+            _ensure_page_platform(page, platform)
             items = (
                 await extract_jd_search(page, max_results * 2)
                 if platform == "jd"
                 else await extract_taobao_search(page, max_results * 2)
             )
+            _ensure_page_platform(page, platform)
             if requires_verification and not items:
                 return {
                     "success": False,
@@ -142,6 +147,7 @@ class ShoppingBrowserService:
         nav = await browser.navigate(detail_url)
         async with browser.lock:
             page = await browser.get_page()
+            _ensure_page_platform(page, platform)
             body_text = ""
             if await page.locator("body").count():
                 body_text = await page.locator("body").inner_text(timeout=5_000)
@@ -178,9 +184,11 @@ class ShoppingBrowserService:
                     ),
                 }
             await self._prepare_product_detail_page(page, platform)
+            _ensure_page_platform(page, platform)
             detail = await extract_product_detail(
                 page, platform, original_url=original_url
             )
+            _ensure_page_platform(page, platform)
             if platform == "taobao":
                 unavailable_markers = (
                     "\u8a72\u5546\u54c1\u4e2d\u570b\u9999\u6e2f\u4e0d\u53ef\u552e\u8ce3",
@@ -211,12 +219,47 @@ class ShoppingBrowserService:
         return detail
 
     async def extract_current_page(self) -> dict[str, Any]:
-        snapshot = await self.browser.snapshot()
+        # Keep the original controller: a snapshot must not switch profiles.
+        browser = self.browser
+        snapshot = await browser.snapshot()
         platform = platform_from_url(snapshot["url"])
-        browser = self._browser_for_platform(platform)
         async with browser.lock:
             page = await browser.get_page()
+            _ensure_page_platform(page, platform)
+            blocked = (
+                snapshot.get("requires_user_verification", False)
+                or page_requires_user_verification(snapshot.get("text", ""), snapshot["url"])
+                or is_taobao_auth_url(snapshot["url"])
+                or is_taobao_auth_url(page.url)
+            )
+            if not blocked:
+                try:
+                    body = page.locator("body")
+                    if not await body.count():
+                        raise SafetyError("Current page DOM unavailable.")
+                    text = await body.inner_text(timeout=5_000)
+                    blocked = page_requires_user_verification(text, page.url) or is_taobao_auth_url(page.url)
+                except Exception as exc:
+                    browser.pause_taobao_automation("current_page_inspection_failed")
+                    raise SafetyError("Cannot inspect current page; extraction stopped.") from exc
+            _ensure_page_platform(page, platform)
+            if blocked:
+                browser.pause_taobao_automation("login_or_verification_required")
+                detail = {
+                    "platform": platform,
+                    **_empty_detail_contract_fields("requires_user_verification", product_url=page.url),
+                }
+                if platform == "taobao":
+                    detail["parameter_evidence_status"] = "not_extracted"
+                return {
+                    "success": False,
+                    "requires_user_verification": True,
+                    "snapshot": snapshot,
+                    "product_like_data": detail,
+                    "detail_output_contract": _detail_output_contract(),
+                }
             detail = await extract_product_detail(page, platform)
+            _ensure_page_platform(page, platform)
         _apply_detail_output_contract(detail)
         return {
             "success": True,
@@ -287,8 +330,10 @@ class ShoppingBrowserService:
         # Taobao must not blindly scroll: repeated wheel events on pages
         # without detail tabs are slow and can provoke site risk controls.
         if platform == "jd":
+            _ensure_page_platform(page, platform)
             await page.wait_for_timeout(self.settings.action_delay_ms)
             for _ in range(2):
+                _ensure_page_platform(page, platform)
                 await page.mouse.wheel(0, 1000)
                 await page.wait_for_timeout(self.settings.action_delay_ms)
             await self._prepare_jd_detail_page(page)
@@ -328,17 +373,31 @@ class ShoppingBrowserService:
         self, page: Any, selectors: tuple[str, ...], *, scroll_after: bool = False
     ) -> None:
         for selector in selectors:
+            _ensure_page_platform(page, "jd")
             locator = page.locator(selector).first
             if not await locator.count():
                 continue
             try:
+                href = await locator.get_attribute("href")
+                target = urljoin(page.url, href) if href else page.url
+                if target.lower().startswith(("http://", "https://")):
+                    ensure_allowed_url(target)
+                    if platform_from_url(target) != "jd":
+                        raise SafetyError("JD detail control targets another platform.")
+                _ensure_page_platform(page, "jd")
                 await locator.click(timeout=2_000)
+                _ensure_page_platform(page, "jd")
                 await page.wait_for_timeout(self.settings.action_delay_ms)
+                _ensure_page_platform(page, "jd")
                 if scroll_after:
                     await page.mouse.wheel(0, 500)
                     await page.wait_for_timeout(self.settings.action_delay_ms)
+                    _ensure_page_platform(page, "jd")
                 return True
+            except SafetyError:
+                raise
             except Exception:
+                _ensure_page_platform(page, "jd")
                 continue
         return False
 
@@ -466,7 +525,7 @@ def _validate_platform(platform: str) -> str:
 
 
 def platform_from_url(url: str) -> str:
-    host = (urlparse(url).hostname or "").lower()
+    host = (urlparse(url).hostname or "").lower().rstrip(".")
     if host == "jd.com" or host.endswith(".jd.com") or host.endswith(".360buy.com"):
         return "jd"
     if (
@@ -477,6 +536,12 @@ def platform_from_url(url: str) -> str:
     ):
         return "taobao"
     raise ValueError("URL must belong to JD, Taobao, or Tmall")
+
+
+def _ensure_page_platform(page: Any, platform: str) -> None:
+    ensure_allowed_url(page.url)
+    if platform_from_url(page.url) != platform:
+        raise SafetyError("Page platform changed; operation stopped without retry.")
 
 
 def _default_chrome_path() -> Path | None:

@@ -77,6 +77,7 @@ class ElementSafetyMetadata:
     input_type: str = ""
     placeholder: str = ""
     name: str = ""
+    form_action: str = ""
 
     def combined_text(self) -> str:
         return " ".join(
@@ -120,6 +121,12 @@ def ensure_allowed_url(url: str) -> str:
     return url
 
 
+def is_taobao_url(url: str) -> bool:
+    """Use the same hostname normalization as the domain allowlist."""
+    host = urlparse(url).hostname or ""
+    return any(_host_matches(host, root) for root in ("taobao.com", "tmall.com"))
+
+
 def ensure_click_allowed(
     metadata: ElementSafetyMetadata,
     *,
@@ -146,4 +153,9 @@ def ensure_typing_allowed(metadata: ElementSafetyMetadata) -> None:
 
 
 def page_requires_user_verification(text: str, url: str = "") -> bool:
-    return bool(_VERIFICATION_RE.search(f"{url}\n{text[:5000]}"))
+    parsed = urlparse(url)
+    jd_login = (
+        (parsed.hostname or "").lower().rstrip(".") == "passport.jd.com"
+        and parsed.path.lower().startswith(("/new/login", "/uc/login", "/login"))
+    )
+    return jd_login or bool(_VERIFICATION_RE.search(f"{url}\n{text[:5000]}"))

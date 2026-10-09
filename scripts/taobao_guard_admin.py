@@ -1,14 +1,12 @@
 from __future__ import annotations
 
-import os
 import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-os.chdir(ROOT)
 
-from jd_taobao_mcp.config import Settings
+from jd_taobao_mcp.config import load_settings
 from jd_taobao_mcp.taobao_guard import TaobaoNavigationGuard
 
 
@@ -17,7 +15,7 @@ def main() -> int:
         print("Usage: python scripts/taobao_guard_admin.py status|resume")
         return 2
 
-    settings = Settings.from_env()
+    settings = load_settings(ROOT)
     state_path = (
         settings.profile_dir
         / "taobao"
