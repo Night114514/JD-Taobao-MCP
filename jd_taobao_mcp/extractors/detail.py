@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import re
 from typing import Any
 from urllib.parse import parse_qs, urlparse
@@ -451,7 +452,7 @@ def _taobao_price_from_url(
     except (TypeError, ValueError):
         return None, sku_id
 
-    if cents <= 0:
+    if not math.isfinite(cents) or cents <= 0:
         return None, sku_id
 
     return round(cents / 100.0, 2), sku_id
