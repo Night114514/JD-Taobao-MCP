@@ -73,7 +73,7 @@ class ShoppingBrowserService:
                     "url": page.url,
                     "message": "Manual verification required. Automation stopped.",
                     "items": [],
-                    "detail_output_contract": _detail_output_contract(),
+                    "detail_output_contract": _detail_output_contract(platform),
                 }
 
             items = (
@@ -90,7 +90,7 @@ class ShoppingBrowserService:
                     "url": page.url,
                     "message": "Page requires manual verification in the visible browser.",
                     "items": [],
-                    "detail_output_contract": _detail_output_contract(),
+                    "detail_output_contract": _detail_output_contract(platform),
                 }
 
         filtered = [
@@ -126,7 +126,7 @@ class ShoppingBrowserService:
                 ),
             },
             "items": filtered,
-            "detail_output_contract": _detail_output_contract(),
+            "detail_output_contract": _detail_output_contract(platform),
             "verification_warning": requires_verification,
             "note": (
                 "JD and Taobao use separate browser profiles. Taobao defaults to Chrome "
@@ -161,7 +161,7 @@ class ShoppingBrowserService:
                     "requires_user_verification": True,
                     "message": "Manual verification required. Automation stopped.",
                     **_empty_detail_contract_fields(
-                        "requires_user_verification", product_url=page.url
+                        "requires_user_verification", product_url=page.url, platform=platform
                     ),
                 }
             if requires_verification and not _page_has_product_content(body_text):
@@ -174,7 +174,7 @@ class ShoppingBrowserService:
                     "requires_user_verification": True,
                     "message": "Product page requires manual verification in the visible browser.",
                     **_empty_detail_contract_fields(
-                        "requires_user_verification", product_url=page.url
+                        "requires_user_verification", product_url=page.url, platform=platform
                     ),
                 }
             await self._prepare_product_detail_page(page, platform)
@@ -222,7 +222,7 @@ class ShoppingBrowserService:
             "success": True,
             "snapshot": snapshot,
             "product_like_data": detail,
-            "detail_output_contract": _detail_output_contract(),
+            "detail_output_contract": _detail_output_contract(platform),
         }
 
     async def _enrich_search_results_with_details(
@@ -524,30 +524,54 @@ def _apply_detail_output_contract(detail: dict[str, Any]) -> None:
     detail["bad_reviews_status"] = _field_status(
         "bad_reviews", len(bad_reviews), target_count=2
     )
-    detail["detail_output_contract"] = _detail_output_contract()
+    platform = detail.get("platform")
+    detail["detail_output_contract"] = _detail_output_contract(platform)
+
+    if platform == "taobao":
+        evidence = detail.get("product_parameter_evidence")
+        conflicts = detail.get("product_parameter_conflicts")
+        detail["parameter_evidence_status"] = (
+            "provided"
+            if isinstance(evidence, list) and isinstance(conflicts, list)
+            else "not_provided"
+        )
 
 
-def _empty_detail_contract_fields(reason: str, *, product_url: str = "") -> dict[str, Any]:
-    return {
+def _empty_detail_contract_fields(
+    reason: str,
+    *,
+    product_url: str = "",
+    platform: str | None = None,
+) -> dict[str, Any]:
+    result = {
         "product_url": product_url,
         "product_parameters": [],
         "good_reviews": [],
         "bad_reviews": [],
         "high_praise_reviews": [],
         "high_dissatisfied_reviews": [],
-        "product_parameters_status": _field_status("product_parameters", 0, reason),
+        "product_parameters_status": _field_status(
+            "product_parameters", 0, reason
+        ),
         "good_reviews_status": _field_status(
             "good_reviews", 0, reason, target_count=5
         ),
         "bad_reviews_status": _field_status(
             "bad_reviews", 0, reason, target_count=2
         ),
-        "detail_output_contract": _detail_output_contract(),
+        "detail_output_contract": _detail_output_contract(platform),
     }
 
+    if platform == "taobao":
+        result["parameter_evidence_status"] = "not_extracted"
 
-def _detail_output_contract() -> dict[str, Any]:
-    return {
+    return result
+
+
+def _detail_output_contract(
+    platform: str | None = None,
+) -> dict[str, Any]:
+    contract = {
         "required_fields": [
             "product_url",
             "product_parameters",
@@ -563,6 +587,63 @@ def _detail_output_contract() -> dict[str, Any]:
             "a status.reason explaining verification, visibility, or extraction limits."
         ),
     }
+
+    if platform == "taobao":
+        contract.update({
+            "empty_field_policy": (
+                "Missing or partial data includes a status.reason. "
+                "An empty list does not prove the product lacks that data."
+            ),
+            "optional_fields": [
+                "product_parameter_evidence",
+                "product_parameter_conflicts",
+                "parameter_evidence_status",
+            ],
+            "parameter_source_priority": [
+                "visible_text",
+                "dom_parameters",
+                "dom_detail",
+                "json_ld",
+                "fallback_text",
+            ],
+            "parameter_evidence_status_values": {
+                "provided": (
+                    "Evidence and conflict arrays were supplied. "
+                    "Empty arrays only describe observed page data."
+                ),
+                "not_provided": (
+                    "Evidence arrays were not supplied. "
+                    "Do not infer that conflicts are absent."
+                ),
+                "not_extracted": (
+                    "Detail extraction was not performed."
+                ),
+            },
+            "parameter_interpretation": {
+                "source": (
+                    "The selected value came from this page location."
+                ),
+                "corroborated_by": (
+                    "Other locations on the same page agree. "
+                    "This is not independent verification."
+                ),
+                "conflicts": (
+                    "Alternative values observed in extracted sources. "
+                    "Review conflicts before treating values as facts."
+                ),
+                "completeness": (
+                    "The complete flag for product_parameters "
+                    "means at least one parameter was extracted, "
+                    "not that the specification list is exhaustive."
+                ),
+            },
+            "extraction_scope": (
+                "Initially loaded page only. Safe Mode does not "
+                "scroll, click tabs, or load additional reviews."
+            ),
+        })
+
+    return contract
 
 
 def _field_status(
