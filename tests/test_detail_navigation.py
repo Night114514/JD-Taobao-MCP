@@ -233,5 +233,75 @@ class VisibleTextParameterTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(parameters), 11)
 
 
+class RegionalAvailabilityTests(unittest.IsolatedAsyncioTestCase):
+    async def test_unavailable_hk_page_skips_taobao_tab_search(self):
+        service = ShoppingBrowserService(Settings.from_env())
+
+        page = Mock()
+        body = Mock()
+        body.inner_text = AsyncMock(
+            return_value="\u8a72\u5546\u54c1\u4e2d\u570b\u9999\u6e2f\u4e0d\u53ef\u552e\u8ce3"
+        )
+        page.locator.return_value = body
+        page.get_by_text = Mock()
+
+        await service._prepare_taobao_detail_page(page)
+
+        page.locator.assert_not_called()
+        page.get_by_text.assert_not_called()
+
+
+class TaobaoPreparationSafetyTests(unittest.IsolatedAsyncioTestCase):
+    async def test_taobao_page_without_tabs_never_wheel_scrolls(self):
+        service = ShoppingBrowserService(Settings.from_env())
+
+        page = Mock()
+
+        body = Mock()
+        body.inner_text = AsyncMock(return_value="normal product page")
+        page.locator.return_value = body
+
+        missing = Mock()
+        missing.count = AsyncMock(return_value=0)
+        page.get_by_text.return_value = missing
+
+        page.mouse = Mock()
+        page.mouse.wheel = AsyncMock()
+        page.wait_for_timeout = AsyncMock()
+
+        await service._prepare_product_detail_page(page, "taobao")
+
+        page.mouse.wheel.assert_not_awaited()
+        page.get_by_text.assert_not_called()
+
+    async def test_taobao_existing_tabs_do_not_use_wheel_scanning(self):
+        service = ShoppingBrowserService(Settings.from_env())
+
+        page = Mock()
+
+        body = Mock()
+        body.inner_text = AsyncMock(return_value="normal product page")
+        page.locator.return_value = body
+
+        node = Mock()
+        node.is_visible = AsyncMock(return_value=True)
+        node.scroll_into_view_if_needed = AsyncMock()
+        node.click = AsyncMock()
+
+        locator = Mock()
+        locator.count = AsyncMock(return_value=1)
+        locator.nth.return_value = node
+        page.get_by_text.return_value = locator
+
+        page.mouse = Mock()
+        page.mouse.wheel = AsyncMock()
+        page.wait_for_timeout = AsyncMock()
+
+        await service._prepare_product_detail_page(page, "taobao")
+
+        page.mouse.wheel.assert_not_awaited()
+        node.click.assert_not_awaited()
+
+
 if __name__ == "__main__":
     unittest.main()

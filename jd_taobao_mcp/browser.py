@@ -15,6 +15,7 @@ from playwright.async_api import (
 )
 
 from .config import Settings
+from .taobao_guard import TaobaoNavigationGuard, is_taobao_auth_url
 from .safety import (
     ElementSafetyMetadata,
     SafetyError,
@@ -28,8 +29,16 @@ from .safety import (
 class BrowserController:
     """Single persistent Playwright browser controlled through serialized MCP tools."""
 
-    def __init__(self, settings: Settings) -> None:
+    def __init__(
+        self, settings: Settings, *, taobao_safe_mode: bool = False
+    ) -> None:
         self.settings = settings
+        self._taobao_guard = (
+            TaobaoNavigationGuard(
+                settings.profile_dir / "taobao-safety-state.json"
+            )
+            if taobao_safe_mode else None
+        )
         self._playwright: Playwright | None = None
         self._context: BrowserContext | None = None
         self._page: Page | None = None
@@ -120,17 +129,83 @@ class BrowserController:
                 "profile_dir": str(self.settings.profile_dir),
             }
 
+    def _deny_taobao_interaction(self, action: str) -> None:
+        if self._taobao_guard is not None:
+            raise SafetyError(
+                f"Taobao Safe Mode blocks {action}. "
+                "Use read-only tools or a single guarded navigation."
+            )
+
+    async def _inspect_taobao_page_before_navigation(
+        self, page: Page
+    ) -> None:
+        if self._taobao_guard is None:
+            return
+
+        current_url = page.url
+        if not current_url.startswith(("http://", "https://")):
+            return
+
+        if is_taobao_auth_url(current_url):
+            self._taobao_guard.pause()
+            raise SafetyError(
+                "Taobao login page detected. Automation paused."
+            )
+
+        try:
+            body = page.locator("body")
+            text = (
+                await body.inner_text(timeout=2_000)
+                if await body.count() else ""
+            )
+        except Exception as exc:
+            raise SafetyError(
+                "Cannot inspect current Taobao page. "
+                "Navigation refused."
+            ) from exc
+
+        if page_requires_user_verification(text, current_url):
+            self._taobao_guard.pause()
+            raise SafetyError(
+                "Taobao verification detected. Automation paused."
+            )
+
     async def navigate(self, url: str) -> dict[str, Any]:
         ensure_allowed_url(url)
         async with self._lock:
             page = await self._active_page_unlocked()
+
+            if self._taobao_guard is not None:
+                await self._inspect_taobao_page_before_navigation(page)
+                self._taobao_guard.reserve_navigation()
+
             try:
-                response = await page.goto(url, wait_until="domcontentloaded")
+                response = await page.goto(
+                    url, wait_until="domcontentloaded"
+                )
             except PlaywrightTimeoutError:
                 response = None
+
             await self._settle(page)
             ensure_allowed_url(page.url)
-            return await self._navigation_result(page, response.status if response else None)
+
+            result = await self._navigation_result(
+                page, response.status if response else None
+            )
+
+            if self._taobao_guard is not None and (
+                result.get("requires_user_verification", False)
+                or is_taobao_auth_url(page.url)
+            ):
+                self._taobao_guard.pause()
+                result["requires_user_verification"] = True
+                result["automation_paused"] = True
+                result["message"] = (
+                    "Taobao login/verification detected. "
+                    "Further automation has been paused."
+                )
+
+            return result
 
     async def _navigation_result(self, page: Page, status: int | None) -> dict[str, Any]:
         text = await page.locator("body").inner_text(timeout=5_000) if await page.locator("body").count() else ""
@@ -170,7 +245,10 @@ class BrowserController:
             raise ValueError("platform 仅支持 jd 或 taobao")
         async with self._lock:
             page = await self._active_page_unlocked()
-            if not page.url or platform not in page.url:
+            if (
+                self._taobao_guard is None
+                and (not page.url or platform not in page.url)
+            ):
                 try:
                     await page.goto(home, wait_until="domcontentloaded")
                 except PlaywrightTimeoutError:
@@ -179,6 +257,12 @@ class BrowserController:
             body_text = ""
             if await page.locator("body").count():
                 body_text = await page.locator("body").inner_text(timeout=5_000)
+            if self._taobao_guard is not None and (
+                is_taobao_auth_url(page.url)
+                or page_requires_user_verification(body_text, page.url)
+            ):
+                self._taobao_guard.pause()
+
             cookies = await self._context.cookies() if self._context else []
             domain_token = "jd.com" if platform == "jd" else "taobao.com"
             relevant_cookie_names = sorted(
@@ -300,6 +384,7 @@ class BrowserController:
             }
 
     async def click(self, ref: str) -> dict[str, Any]:
+        self._deny_taobao_interaction("click")
         async with self._lock:
             page = await self._active_page_unlocked()
             locator = page.locator(f'[data-mcp-ref="{_escape_css_value(ref)}"]')
@@ -353,6 +438,7 @@ class BrowserController:
     async def type_text(self, ref: str, text: str, press_enter: bool = False) -> dict[str, Any]:
         if len(text) > 2_000:
             raise ValueError("单次输入最多 2000 个字符。")
+        self._deny_taobao_interaction("typing")
         async with self._lock:
             page = await self._active_page_unlocked()
             locator = page.locator(f'[data-mcp-ref="{_escape_css_value(ref)}"]')
@@ -395,6 +481,7 @@ class BrowserController:
             raise ValueError("direction 仅支持 up 或 down")
         amount = max(100, min(amount, 5_000))
         delta = amount if direction == "down" else -amount
+        self._deny_taobao_interaction("scrolling")
         async with self._lock:
             page = await self._active_page_unlocked()
             await page.mouse.wheel(0, delta)
@@ -405,6 +492,7 @@ class BrowserController:
             return {"success": True, "direction": direction, "amount": amount, **position}
 
     async def go_back(self) -> dict[str, Any]:
+        self._deny_taobao_interaction("history navigation")
         async with self._lock:
             page = await self._active_page_unlocked()
             try:
