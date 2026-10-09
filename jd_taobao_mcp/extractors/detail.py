@@ -290,17 +290,12 @@ async def extract_product_detail(
             all_taobao_parameters,
         )
 
-        if taobao_parameters:
-            product_parameters = taobao_parameters
-        else:
-            product_parameters = _merge_parameters(
-                _normalize_parameters(
-                    raw.get("product_parameters", [])
-                ),
-                _normalize_parameters(
-                    raw.get("detail_product_parameters", [])
-                ),
-            )
+        product_parameters = _merge_parameters(
+            taobao_parameters,
+            _normalize_parameters(raw.get("product_parameters", [])),
+            _normalize_parameters(raw.get("detail_product_parameters", [])),
+            _json_ld_product_parameters(json_product),
+        )
     else:
         product_parameters = _merge_parameters(
             _parameters_from_detail_text(body_text),
@@ -547,6 +542,47 @@ def _selectors(platform: str) -> dict[str, list[str]]:
         "review_time": ["[class*='time']", "[class*='Time']", "[class*='date']", "[class*='Date']"],
         "review_variant": ["[class*='sku']", "[class*='Sku']", "[class*='spec']", "[class*='Spec']"],
     }
+
+
+def _json_ld_product_parameters(
+    product: dict[str, Any],
+) -> list[dict[str, str]]:
+    properties = product.get("additionalProperty", [])
+
+    if isinstance(properties, dict):
+        properties = [properties]
+    if not isinstance(properties, list):
+        return []
+
+    output = []
+
+    for item in properties[:80]:
+        if not isinstance(item, dict):
+            continue
+
+        name = item.get("name")
+        value = item.get("value")
+
+        if not isinstance(name, str):
+            continue
+        if isinstance(value, bool) or not isinstance(
+            value, (str, int, float)
+        ):
+            continue
+
+        name = compact_text(name, 120)
+        value = compact_text(str(value), 500)
+
+        if not name or not value:
+            continue
+
+        output.append({
+            "name": name,
+            "value": value,
+            "group": "JSON-LD",
+        })
+
+    return output
 
 
 def _normalize_parameters(items: list[Any]) -> list[dict[str, str]]:
