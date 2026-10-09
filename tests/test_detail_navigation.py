@@ -12,10 +12,10 @@ from jd_taobao_mcp.service import ShoppingBrowserService, _canonical_detail_url
 
 CANONICAL = "https://item.taobao.com/item.htm?id=623937911339&skuId=5455243929341"
 ORIGINAL = (
-    "https://item.taobao.com/item.htm?addressId=14849490262&areaId=810202"
-    "&detailAlgoParam=MT7925&id=623937911339&latitude=22.297238&longitude=114.178614"
-    "&mi_id=0000SvBf3YRkKCiHmRNQnYczrZtp_jQdjMfTwXIytdfr0J0%2C0000SvBf3YRkKCiHmRNQnYczrZtp_jQdjMfTwXIytdfr0J0"
-    "&search_ver=ssr&sid=235d91a329625e3c6c997fcdd1252435&skuId=5455243929341"
+    "https://item.taobao.com/item.htm?addressId=fixture-address&areaId=fixture-area"
+    "&detailAlgoParam=MT7925&id=623937911339&latitude=0&longitude=0"
+    "&mi_id=fixture-tracking-a%2Cfixture-tracking-b"
+    "&search_ver=ssr&sid=fixture-session&skuId=5455243929341"
     "&skuPriceType=3&ttid=600000%40taobao_android_10.7.0&upStreamPrice=8500&xxc=taobaoSearch"
 )
 TITLE = "MT7925 WIFI7千兆5G/6G三双频内置M.2无线网卡5.4蓝牙BE200 AX210"
