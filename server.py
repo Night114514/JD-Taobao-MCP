@@ -99,7 +99,12 @@ async def search_products(
 ) -> dict[str, Any]:
     """Search JD or Taobao products.
 
-Taobao Safe Mode: no automatic scrolling or bulk detail navigation. include_details=True is ignored for Taobao. Only initially loaded search results are extracted. JD retains its existing behavior."""
+Taobao Safe Mode: no scrolling or bulk detail navigation.
+include_details=True is ignored for Taobao.
+Only initially loaded search results are extracted.
+
+detail_output_contract describes available detail fields, but Taobao search items do not automatically include product detail evidence.
+JD retains its existing behavior."""
     return await service.search_products(
         platform=platform,
         keyword=keyword,
@@ -115,7 +120,14 @@ Taobao Safe Mode: no automatic scrolling or bulk detail navigation. include_deta
 async def get_product_detail(url: str) -> dict[str, Any]:
     """Open one permitted product detail page and extract available information.
 
-Taobao Safe Mode reads initially loaded DOM only. No tab clicks, scrolling, or expansion. Missing parameters and reviews are valid partial results. Navigation guard applies."""
+Taobao Safe Mode reads initially loaded DOM only.
+No tab clicks, scrolling, or expansion. Navigation guard applies.
+
+For Taobao, inspect product_parameter_evidence, product_parameter_conflicts, and parameter_evidence_status.
+provided, not_provided, and not_extracted have different meanings.
+Same-page source agreement is not independent verification.
+An empty conflict list is meaningful only when evidence was provided.
+Missing parameters and reviews are valid partial results."""
     return await service.get_product_detail(url)
 
 
@@ -127,7 +139,11 @@ async def page_snapshot(max_chars: int | None = None) -> dict[str, Any]:
 
 @mcp.tool()
 async def extract_current_page() -> dict[str, Any]:
-    """对当前京东/淘宝/天猫页面同时执行通用快照和商品字段提取。"""
+    """Extract a snapshot and structured data from the current page.
+
+The product_like_data object contains the detail fields.
+For Taobao, inspect parameter_evidence_status and source conflicts.
+This tool does not require a new product-page navigation."""
     return await service.extract_current_page()
 
 
