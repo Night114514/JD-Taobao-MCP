@@ -285,14 +285,12 @@ async def extract_product_detail(
         # Prefer visible/layout-aware innerText. Taobao summary parameter cards
         # rely on whitespace/order that can be lost in document.body.textContent.
         visible_taobao_parameters = _taobao_parameters_from_text(body_text)
-        all_taobao_parameters = _taobao_parameters_from_text(body_text_all)
-        taobao_parameters = _merge_parameters(
-            visible_taobao_parameters,
-            all_taobao_parameters,
-        )
+        # textContent may contain hidden content. Preserve it separately until
+        # evidence/conflicts are built; do not manufacture it from innerText.
+        all_taobao_parameters = _taobao_parameters_from_text(raw.get("body_text_all") or "")
 
         parameter_sources = (
-            ("visible_text", taobao_parameters),
+            ("visible_text", visible_taobao_parameters),
             (
                 "dom_parameters",
                 _normalize_parameters(raw.get("product_parameters", [])),
@@ -302,6 +300,7 @@ async def extract_product_detail(
                 _normalize_parameters(raw.get("detail_product_parameters", [])),
             ),
             ("json_ld", _json_ld_product_parameters(json_product)),
+            ("text_content", all_taobao_parameters),
         )
         product_parameters = _merge_parameters(
             *(items for _, items in parameter_sources)

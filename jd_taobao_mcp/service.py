@@ -247,7 +247,9 @@ class ShoppingBrowserService:
                 browser.pause_taobao_automation("login_or_verification_required")
                 detail = {
                     "platform": platform,
-                    **_empty_detail_contract_fields("requires_user_verification", product_url=page.url),
+                    **_empty_detail_contract_fields(
+                        "requires_user_verification", product_url=page.url, platform=platform
+                    ),
                 }
                 if platform == "taobao":
                     detail["parameter_evidence_status"] = "not_extracted"
@@ -256,7 +258,7 @@ class ShoppingBrowserService:
                     "requires_user_verification": True,
                     "snapshot": snapshot,
                     "product_like_data": detail,
-                    "detail_output_contract": _detail_output_contract(),
+                    "detail_output_contract": _detail_output_contract(platform),
                 }
             detail = await extract_product_detail(page, platform)
             _ensure_page_platform(page, platform)
@@ -669,6 +671,7 @@ def _detail_output_contract(
                 "dom_parameters",
                 "dom_detail",
                 "json_ld",
+                "text_content",
                 "fallback_text",
             ],
             "parameter_evidence_status_values": {
@@ -685,6 +688,11 @@ def _detail_output_contract(
                 ),
             },
             "parameter_interpretation": {
+                "text_content": (
+                    "document.body.textContent may include hidden content. "
+                    "It is distinct from visible innerText and has lower priority "
+                    "than DOM parameter blocks and JSON-LD."
+                ),
                 "source": (
                     "The selected value came from this page location."
                 ),
