@@ -195,5 +195,133 @@ class DataCompletenessTests(unittest.IsolatedAsyncioTestCase):
         page.goto.assert_not_called()
 
 
+    async def test_parameter_evidence_and_conflicts(self):
+        raw = make_raw()
+        raw["product_parameters"] = [
+            {"name": MODEL, "value": "DIFFERENT_MODEL"},
+            {"name": INTERFACE, "value": "M.2 PCIe"},
+        ]
+        raw["json_ld"] = [{
+            "@type": "Product",
+            "additionalProperty": [
+                {"name": BLUETOOTH, "value": "5.4"},
+            ],
+        }]
+
+        result = await extract_product_detail(
+            make_page(raw), "taobao"
+        )
+
+        evidence = {
+            item["name"]: item
+            for item in result["product_parameter_evidence"]
+        }
+
+        self.assertEqual(
+            evidence[MODEL]["source"], "visible_text"
+        )
+        self.assertEqual(
+            evidence[INTERFACE]["source"], "dom_parameters"
+        )
+        self.assertEqual(
+            evidence[BLUETOOTH]["source"], "json_ld"
+        )
+
+        conflicts = result["product_parameter_conflicts"]
+        model_conflict = next(
+            c for c in conflicts if c["name"] == MODEL
+        )
+
+        self.assertEqual(
+            model_conflict["selected_value"], "MT7925"
+        )
+        self.assertIn(
+            {
+                "source": "dom_parameters",
+                "value": "DIFFERENT_MODEL",
+            },
+            model_conflict["alternatives"],
+        )
+
+    async def test_matching_sources_not_conflicts(self):
+        raw = make_raw()
+        raw["product_parameters"] = [
+            {"name": MODEL, "value": "MT7925"},
+        ]
+        raw["json_ld"] = [{
+            "@type": "Product",
+            "additionalProperty": [
+                {"name": MODEL, "value": "MT7925"},
+            ],
+        }]
+
+        result = await extract_product_detail(
+            make_page(raw), "taobao"
+        )
+
+        model = next(
+            item
+            for item in result["product_parameter_evidence"]
+            if item["name"] == MODEL
+        )
+
+        self.assertEqual(model["source"], "visible_text")
+        self.assertIn(
+            "dom_parameters", model["corroborated_by"]
+        )
+        self.assertIn(
+            "json_ld", model["corroborated_by"]
+        )
+        self.assertEqual(
+            result["product_parameter_conflicts"], []
+        )
+
+    async def test_dom_conflict_without_visible_text(self):
+        raw = make_raw()
+        raw["body_text"] = ""
+        raw["body_text_all"] = ""
+
+        raw["product_parameters"] = [
+            {"name": MODEL, "value": "DOM_MODEL"},
+        ]
+        raw["detail_product_parameters"] = [
+            {"name": MODEL, "value": "DETAIL_MODEL"},
+        ]
+
+        result = await extract_product_detail(
+            make_page(raw), "taobao"
+        )
+
+        model = next(
+            item
+            for item in result["product_parameter_evidence"]
+            if item["name"] == MODEL
+        )
+
+        self.assertEqual(model["value"], "DOM_MODEL")
+        self.assertEqual(model["source"], "dom_parameters")
+
+        conflict = result["product_parameter_conflicts"][0]
+        self.assertIn(
+            {
+                "source": "dom_detail",
+                "value": "DETAIL_MODEL",
+            },
+            conflict["alternatives"],
+        )
+
+    async def test_jd_output_contract_unchanged(self):
+        result = await extract_product_detail(
+            make_page(make_raw()), "jd"
+        )
+
+        self.assertNotIn(
+            "product_parameter_evidence", result
+        )
+        self.assertNotIn(
+            "product_parameter_conflicts", result
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
