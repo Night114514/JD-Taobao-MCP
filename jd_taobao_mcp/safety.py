@@ -77,6 +77,7 @@ class ElementSafetyMetadata:
     input_type: str = ""
     placeholder: str = ""
     name: str = ""
+    form_action: str = ""
 
     def combined_text(self) -> str:
         return " ".join(
@@ -118,6 +119,12 @@ def ensure_allowed_url(url: str) -> str:
             "仅允许访问京东、淘宝和天猫域名；不允许 file://、本地地址或任意第三方网站。"
         )
     return url
+
+
+def is_taobao_url(url: str) -> bool:
+    """Use the same hostname normalization as the domain allowlist."""
+    host = urlparse(url).hostname or ""
+    return any(_host_matches(host, root) for root in ("taobao.com", "tmall.com"))
 
 
 def ensure_click_allowed(

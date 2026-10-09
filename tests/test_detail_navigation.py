@@ -140,6 +140,7 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_jd_navigation_unchanged(self):
         url = "https://item.jd.com/123.html?foo=bar"
+        self.page.url = url  # Simulate the requested JD navigation, not a Taobao redirect.
         await self.service.get_product_detail(url)
         self.browser.navigate.assert_awaited_once_with(url)
 
