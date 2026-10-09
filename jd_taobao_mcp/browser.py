@@ -159,9 +159,10 @@ class BrowserController:
                 if await body.count() else ""
             )
         except Exception as exc:
+            self._taobao_guard.pause("pre_navigation_inspection_failed")
             raise SafetyError(
                 "Cannot inspect current Taobao page. "
-                "Navigation refused."
+                "Automation paused."
             ) from exc
 
         if page_requires_user_verification(text, current_url):
@@ -172,6 +173,7 @@ class BrowserController:
 
     async def navigate(self, url: str) -> dict[str, Any]:
         ensure_allowed_url(url)
+
         async with self._lock:
             page = await self._active_page_unlocked()
 
@@ -180,32 +182,60 @@ class BrowserController:
                 self._taobao_guard.reserve_navigation()
 
             try:
-                response = await page.goto(
-                    url, wait_until="domcontentloaded"
+                try:
+                    response = await page.goto(
+                        url, wait_until="domcontentloaded"
+                    )
+                except PlaywrightTimeoutError as exc:
+                    if self._taobao_guard is not None:
+                        raise SafetyError(
+                            "Taobao navigation timed out. "
+                            "Automation must pause."
+                        ) from exc
+                    response = None
+
+                await self._settle(page)
+                ensure_allowed_url(page.url)
+
+                if self._taobao_guard is not None:
+                    if not await page.locator("body").count():
+                        raise SafetyError(
+                            "Taobao page DOM unavailable."
+                        )
+
+                result = await self._navigation_result(
+                    page,
+                    response.status if response else None,
                 )
-            except PlaywrightTimeoutError:
-                response = None
 
-            await self._settle(page)
-            ensure_allowed_url(page.url)
+                if self._taobao_guard is not None:
+                    if not result.get("success", False):
+                        raise SafetyError(
+                            "Taobao navigation result was unsuccessful."
+                        )
 
-            result = await self._navigation_result(
-                page, response.status if response else None
-            )
+                    if (
+                        result.get("requires_user_verification", False)
+                        or is_taobao_auth_url(page.url)
+                    ):
+                        self._taobao_guard.pause(
+                            "login_or_verification_required"
+                        )
+                        result["requires_user_verification"] = True
+                        result["automation_paused"] = True
+                        result["message"] = (
+                            "Taobao login/verification detected. "
+                            "Further automation has been paused."
+                        )
 
-            if self._taobao_guard is not None and (
-                result.get("requires_user_verification", False)
-                or is_taobao_auth_url(page.url)
-            ):
-                self._taobao_guard.pause()
-                result["requires_user_verification"] = True
-                result["automation_paused"] = True
-                result["message"] = (
-                    "Taobao login/verification detected. "
-                    "Further automation has been paused."
-                )
+                return result
 
-            return result
+            except (Exception, asyncio.CancelledError):
+                if self._taobao_guard is not None:
+                    self._taobao_guard.pause(
+                        "navigation_or_inspection_failed"
+                    )
+                raise
 
     async def _navigation_result(self, page: Page, status: int | None) -> dict[str, Any]:
         text = await page.locator("body").inner_text(timeout=5_000) if await page.locator("body").count() else ""
