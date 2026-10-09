@@ -155,6 +155,10 @@ class BrowserController:
         self._ensure_controller_url(page.url)
         return page
 
+    def pause_taobao_automation(self, reason: str) -> None:
+        if self._taobao_guard is not None:
+            self._taobao_guard.pause(reason)
+
     async def _inspect_taobao_page_before_navigation(
         self, page: Page
     ) -> None:

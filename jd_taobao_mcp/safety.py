@@ -153,4 +153,9 @@ def ensure_typing_allowed(metadata: ElementSafetyMetadata) -> None:
 
 
 def page_requires_user_verification(text: str, url: str = "") -> bool:
-    return bool(_VERIFICATION_RE.search(f"{url}\n{text[:5000]}"))
+    parsed = urlparse(url)
+    jd_login = (
+        (parsed.hostname or "").lower().rstrip(".") == "passport.jd.com"
+        and parsed.path.lower().startswith(("/new/login", "/uc/login", "/login"))
+    )
+    return jd_login or bool(_VERIFICATION_RE.search(f"{url}\n{text[:5000]}"))

@@ -9,6 +9,7 @@ from .browser import BrowserController
 from .config import Settings
 from .extractors import extract_jd_search, extract_product_detail, extract_taobao_search
 from .safety import SafetyError, ensure_allowed_url, page_requires_user_verification
+from .taobao_guard import is_taobao_auth_url
 
 
 class ShoppingBrowserService:
@@ -218,12 +219,45 @@ class ShoppingBrowserService:
         return detail
 
     async def extract_current_page(self) -> dict[str, Any]:
-        snapshot = await self.browser.snapshot()
+        # Keep the original controller: a snapshot must not switch profiles.
+        browser = self.browser
+        snapshot = await browser.snapshot()
         platform = platform_from_url(snapshot["url"])
-        browser = self._browser_for_platform(platform)
         async with browser.lock:
             page = await browser.get_page()
             _ensure_page_platform(page, platform)
+            blocked = (
+                snapshot.get("requires_user_verification", False)
+                or page_requires_user_verification(snapshot.get("text", ""), snapshot["url"])
+                or is_taobao_auth_url(snapshot["url"])
+                or is_taobao_auth_url(page.url)
+            )
+            if not blocked:
+                try:
+                    body = page.locator("body")
+                    if not await body.count():
+                        raise SafetyError("Current page DOM unavailable.")
+                    text = await body.inner_text(timeout=5_000)
+                    blocked = page_requires_user_verification(text, page.url) or is_taobao_auth_url(page.url)
+                except Exception as exc:
+                    browser.pause_taobao_automation("current_page_inspection_failed")
+                    raise SafetyError("Cannot inspect current page; extraction stopped.") from exc
+            _ensure_page_platform(page, platform)
+            if blocked:
+                browser.pause_taobao_automation("login_or_verification_required")
+                detail = {
+                    "platform": platform,
+                    **_empty_detail_contract_fields("requires_user_verification", product_url=page.url),
+                }
+                if platform == "taobao":
+                    detail["parameter_evidence_status"] = "not_extracted"
+                return {
+                    "success": False,
+                    "requires_user_verification": True,
+                    "snapshot": snapshot,
+                    "product_like_data": detail,
+                    "detail_output_contract": _detail_output_contract(),
+                }
             detail = await extract_product_detail(page, platform)
             _ensure_page_platform(page, platform)
         _apply_detail_output_contract(detail)
