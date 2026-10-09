@@ -10,7 +10,7 @@ from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
 from jd_taobao_mcp.browser import BrowserController
 from jd_taobao_mcp.config import Settings
-from jd_taobao_mcp.safety import SafetyError
+from jd_taobao_mcp.safety import SafetyError, page_requires_user_verification
 from jd_taobao_mcp.taobao_guard import TaobaoNavigationGuard
 
 
@@ -167,6 +167,94 @@ class NavigationFailClosedTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result["success"])
         jd._navigation_result.assert_awaited_once()
         self.assertIsNone(jd._taobao_guard)
+
+
+    async def test_http_rejections_pause(self):
+        for status in (401, 403, 429, 500, 502, 503):
+            with self.subTest(status=status):
+                self.page.url = "about:blank"
+                self.controller._taobao_guard = TaobaoNavigationGuard(
+                    self.settings.profile_dir
+                    / f"http-{status}.json"
+                )
+
+                async def rejected(url, **kwargs):
+                    self.page.url = url
+                    return SimpleNamespace(status=status)
+
+                self.page.goto.side_effect = rejected
+
+                with self.assertRaisesRegex(
+                    SafetyError, "HTTP status"
+                ):
+                    await self.controller.navigate(TAOBAO_URL)
+
+                self.assert_persistently_paused()
+                self.controller._navigation_result.assert_not_awaited()
+
+    async def test_missing_http_response_pauses(self):
+        self.page.goto.side_effect = None
+        self.page.goto.return_value = None
+
+        with self.assertRaisesRegex(
+            SafetyError, "HTTP status None"
+        ):
+            await self.controller.navigate(TAOBAO_URL)
+
+        self.assert_persistently_paused()
+
+    async def test_http_200_is_allowed(self):
+        result = await self.controller.navigate(TAOBAO_URL)
+
+        self.assertTrue(result["success"])
+        self.assertFalse(
+            self.controller._taobao_guard.is_paused()
+        )
+
+    async def test_jd_http_429_unchanged(self):
+        jd = BrowserController(
+            self.settings, taobao_safe_mode=False
+        )
+
+        jd._active_page_unlocked = AsyncMock(
+            return_value=self.page
+        )
+        jd._settle = AsyncMock()
+        jd._navigation_result = AsyncMock(
+            return_value={"success": True, "url": JD_URL}
+        )
+
+        async def rejected(url, **kwargs):
+            self.page.url = url
+            return SimpleNamespace(status=429)
+
+        self.page.goto.side_effect = rejected
+        result = await jd.navigate(JD_URL)
+
+        self.assertTrue(result["success"])
+        self.assertIsNone(jd._taobao_guard)
+
+
+class VerificationRegexTests(unittest.TestCase):
+    def test_verification_indicators(self):
+        indicators = (
+            "\u8f93\u5165\u9a8c\u8bc1\u7801",
+            "\u83b7\u53d6\u9a8c\u8bc1\u7801",
+            "\u9a8c\u8bc1\u7801\u9519\u8bef",
+            "\u8acb\u5b8c\u6210\u9a57\u8b49",
+            "captcha",
+        )
+        for indicator in indicators:
+            with self.subTest(indicator=indicator):
+                self.assertTrue(
+                    page_requires_user_verification(indicator)
+                )
+
+        self.assertFalse(
+            page_requires_user_verification(
+                "MT7925 WiFi wireless adapter"
+            )
+        )
 
 
 if __name__ == "__main__":

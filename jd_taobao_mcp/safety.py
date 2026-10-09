@@ -58,15 +58,7 @@ _SENSITIVE_INPUT_RE = re.compile(
 )
 
 _VERIFICATION_RE = re.compile(
-    r"滑块|安全验证|异常访问|访问过于频繁|请完成验证|请先验证|输入验证码|获取验证码|验证码错误|captcha|人机验证|拖动.*验证",
-    re.I,
-)
-
-
-_VERIFICATION_RE = re.compile(
-    r"滑块|安全验证|异常访问|访问过于频繁|请完成验证|请先验证|"
-    r"拖动下方滑块|拖动到最右边|验证失败|点击框体重试|"
-    r"captcha|人机验证|drag.*verify|verification failed",
+    "\u6ed1\u5757|\u5b89\u5168\u9a8c\u8bc1|\u5f02\u5e38\u8bbf\u95ee|\u8bbf\u95ee\u8fc7\u4e8e\u9891\u7e41|\u8bf7\u5b8c\u6210\u9a8c\u8bc1|\u8bf7\u5148\u9a8c\u8bc1|\u8f93\u5165\u9a8c\u8bc1\u7801|\u83b7\u53d6\u9a8c\u8bc1\u7801|\u9a8c\u8bc1\u7801\u9519\u8bef|captcha|\u4eba\u673a\u9a8c\u8bc1|\u62d6\u52a8.*\u9a8c\u8bc1|\u62d6\u52a8\u4e0b\u65b9\u6ed1\u5757|\u62d6\u52a8\u5230\u6700\u53f3\u8fb9|\u9a8c\u8bc1\u5931\u8d25|\u70b9\u51fb\u6846\u4f53\u91cd\u8bd5|drag.*verify|verification failed|\u8acb\u5b8c\u6210\u9a57\u8b49|\u5b89\u5168\u9a57\u8b49|\u9a57\u8b49\u5931\u6557",
     re.I,
 )
 

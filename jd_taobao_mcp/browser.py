@@ -194,6 +194,23 @@ class BrowserController:
                         ) from exc
                     response = None
 
+                if self._taobao_guard is not None:
+                    http_status = (
+                        response.status if response is not None else None
+                    )
+                    if (
+                        http_status is None
+                        or http_status in {401, 403, 429}
+                        or (
+                            isinstance(http_status, int)
+                            and 500 <= http_status <= 599
+                        )
+                    ):
+                        raise SafetyError(
+                            f"Taobao HTTP status {http_status}; "
+                            "automation paused. Do not retry."
+                        )
+
                 await self._settle(page)
                 ensure_allowed_url(page.url)
 
