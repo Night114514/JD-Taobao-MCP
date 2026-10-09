@@ -1,27 +1,17 @@
 from __future__ import annotations
 
 import sys
-import os
 from pathlib import Path
 from typing import Any
 
-from dotenv import load_dotenv
-
 PROJECT_ROOT = Path(__file__).resolve().parent
-load_dotenv(PROJECT_ROOT / ".env")
-
-playwright_browsers_path = os.getenv("PLAYWRIGHT_BROWSERS_PATH", "").strip()
-if playwright_browsers_path:
-    browsers_path = Path(playwright_browsers_path)
-    if not browsers_path.is_absolute():
-        os.environ["PLAYWRIGHT_BROWSERS_PATH"] = str(PROJECT_ROOT / browsers_path)
 
 from mcp.server.fastmcp import FastMCP
 
-from jd_taobao_mcp.config import Settings
+from jd_taobao_mcp.config import load_settings
 from jd_taobao_mcp.service import ShoppingBrowserService
 
-settings = Settings.from_env()
+settings = load_settings(PROJECT_ROOT)
 service = ShoppingBrowserService(settings)
 
 mcp = FastMCP(
