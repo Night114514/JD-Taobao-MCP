@@ -290,6 +290,26 @@ Server 與管理 CLI 共用 `load_settings`，從專案根目錄載入 `.env`，
 
 測試子程序在匯入 server 前封鎖 Playwright 啟動、額外子程序及非 loopback socket 連線，並停用 `.env` 載入。Windows asyncio 內部 socket pair 可使用 loopback。這是測試防護，不是生產網絡 sandbox。Mock `tools/call` 驗證的是協定及序列化，不能替代 service／guard 測試，也不能證明真實淘寶 DOM、登入、風控或商品資料完整性。
 
+### GitHub Actions 離線 CI
+
+`.github/workflows/offline-tests.yml` 在 push 及 pull request（包括 Draft）執行 Windows／Python 3.13 驗證：從 `pyproject.toml` 執行 `python -m pip --isolated install .`、Python 語法檢查、完整 unittest，並另外明確執行永久化的 4 個 Mock MCP stdio 測試。stdio 案例已包含於完整套件，不能將兩次執行數相加當作不同測試總數。
+
+CI 使用 `windows-latest`、唯讀 `contents` 權限、固定完整 SHA 的 GitHub Actions，checkout 不保留憑證；job 上限為 15 分鐘，安裝／完整測試各 5 分鐘、stdio 步驟 3 分鐘。不使用 secrets、`pull_request_target`、瀏覽器安裝或真實網站操作。
+
+在沒有 `.env` 的隔離 checkout 重現相同測試入口：
+
+```powershell
+python scripts/ci_offline_tests.py
+python scripts/ci_offline_tests.py --safety-only
+python scripts/ci_offline_tests.py --stdio-only
+```
+
+入口在匯入測試前清理繼承設定，將 Profile、artifacts 及臨時檔案指向本次臨時目錄，停用真實 `.env`，封鎖 Playwright 啟動及非 loopback Python socket I/O。只允許既有 stdio fixture 啟動子程序，且要求臨時路徑、受限環境及停用 `.env`；fixture 自身再封鎖瀏覽器及額外子程序。Windows asyncio 在分配 pipe 前使用相同 Allowlist 驗證，再由 Audit Guard 核對確切指令、cwd 及環境；不會為合法 fixture 停用 Audit Guard。CLI 設定測試仍可讀取自行建立的臨時 `.env`，以保留設定回歸覆蓋。測試意外 I/O、零測試或 skipped 均視為失敗，完整及 stdio 套件亦必須恰好記錄 4 個經 audit 的 fixture 子程序。
+
+9 個 CI 安全測試涵蓋拒絕任意指令／Shell、越界路徑、環境注入、非 loopback audit 事件，以及 Windows asyncio 拒絕指令後的 pipe／stderr 清理。網絡負面案例使用合成 audit 事件，不會向真實網站送出請求。
+
+這些是防止測試誤觸真實 I/O 的保護，並非用來執行惡意程式碼的 OS sandbox。套件安裝仍需存取 Python 套件來源，依賴版本沿用 `pyproject.toml` 範圍；此 CI 不代表真實淘寶／天貓、帳號、DOM、Cookie 或風控驗收。
+
 ### GitHub 主页为什么会空？
 
 GitHub 只会把仓库根目录的 `README.md` 显示在项目主页。详细文档必须放在仓库根目录，而不是只放在子目录或缺失的路径下。
