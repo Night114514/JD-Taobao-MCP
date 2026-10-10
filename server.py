@@ -1,32 +1,24 @@
 from __future__ import annotations
 
 import sys
-import os
 from pathlib import Path
 from typing import Any
 
-from dotenv import load_dotenv
-
 PROJECT_ROOT = Path(__file__).resolve().parent
-load_dotenv(PROJECT_ROOT / ".env")
-
-playwright_browsers_path = os.getenv("PLAYWRIGHT_BROWSERS_PATH", "").strip()
-if playwright_browsers_path:
-    browsers_path = Path(playwright_browsers_path)
-    if not browsers_path.is_absolute():
-        os.environ["PLAYWRIGHT_BROWSERS_PATH"] = str(PROJECT_ROOT / browsers_path)
 
 from mcp.server.fastmcp import FastMCP
 
-from jd_taobao_mcp.config import Settings
+from jd_taobao_mcp.config import load_settings
 from jd_taobao_mcp.service import ShoppingBrowserService
 
-settings = Settings.from_env()
+settings = load_settings(PROJECT_ROOT)
 service = ShoppingBrowserService(settings)
 
 mcp = FastMCP(
     "JD-Taobao-Browser",
     instructions=(
+        "Taobao Safe Mode: no automated scrolling, clicking, typing, or bulk detail enrichment. "
+        "Never retry blocked Taobao requests automatically or clear verification pauses. "
         "用于在用户本机可见浏览器中浏览京东、淘宝和天猫，并提取页面与商品数据。"
         "必须让用户自己完成扫码、密码、验证码和安全验证。"
         "默认只读：不得购买、加入购物车、结算、支付、关注、收藏、删除或修改账户信息。"
@@ -78,7 +70,7 @@ async def check_login(platform: str) -> dict[str, Any]:
 
 @mcp.tool()
 async def open_url(url: str) -> dict[str, Any]:
-    """打开京东、淘宝或天猫 URL。其他域名会被拒绝。"""
+    """Open a permitted URL. Taobao navigation is subject to cooldown, hourly limits, and persistent verification pause."""
     from jd_taobao_mcp.service import platform_from_url
 
     platform = platform_from_url(url)
@@ -95,18 +87,9 @@ async def search_products(
     sort: str = "default",
     include_details: bool = True,
 ) -> dict[str, Any]:
-    """搜索京东或淘宝商品并返回结构化列表；默认逐个补详情硬约束字段。
+    """Search JD or Taobao products.
 
-    Args:
-        platform: jd 或 taobao。
-        keyword: 商品关键词。
-        max_results: 最多返回数量；受环境变量上限约束。
-        min_price: 可选最低价格，本地过滤。
-        max_price: 可选最高价格，本地过滤。
-        sort: default、price_asc 或 price_desc；排序在提取结果上本地完成。
-        include_details: 默认 true。逐个打开结果商品页，并强制每个商品返回
-            product_url、product_parameters、最多 5 条 good_reviews、最多 2 条 bad_reviews 及对应 status 字段。
-    """
+Taobao Safe Mode: no automatic scrolling or bulk detail navigation. include_details=True is ignored for Taobao. Only initially loaded search results are extracted. JD retains its existing behavior."""
     return await service.search_products(
         platform=platform,
         keyword=keyword,
@@ -120,7 +103,9 @@ async def search_products(
 
 @mcp.tool()
 async def get_product_detail(url: str) -> dict[str, Any]:
-    """打开商品页并提取详情；硬约束返回产品链接、产品参数、最多 5 条好评、最多 2 条差评及 status。"""
+    """Open one permitted product detail page and extract available information.
+
+Taobao Safe Mode reads initially loaded DOM only. No tab clicks, scrolling, or expansion. Missing parameters and reviews are valid partial results. Navigation guard applies."""
     return await service.get_product_detail(url)
 
 
@@ -144,10 +129,7 @@ async def list_page_elements(limit: int = 80) -> dict[str, Any]:
 
 @mcp.tool()
 async def click_page_element(ref: str) -> dict[str, Any]:
-    """点击 list_page_elements 返回的 ref。
-
-    默认阻止购买、结算、支付、购物车、收藏、关注、删除、地址变更等动作。
-    """
+    """Click an allowed page element. Disabled for Taobao Safe Mode."""
     return await service.browser.click(ref)
 
 
@@ -155,22 +137,19 @@ async def click_page_element(ref: str) -> dict[str, Any]:
 async def type_into_element(
     ref: str, text: str, press_enter: bool = False
 ) -> dict[str, Any]:
-    """向当前页面的普通输入框输入文字，可选择按回车。
-
-    密码、验证码、银行卡、身份证和支付认证字段会被拒绝。
-    """
+    """Type into an allowed field. Disabled for Taobao Safe Mode."""
     return await service.browser.type_text(ref, text, press_enter=press_enter)
 
 
 @mcp.tool()
 async def scroll_page(direction: str = "down", amount: int = 900) -> dict[str, Any]:
-    """向上或向下滚动当前页面。"""
+    """Scroll the current page. Disabled for Taobao Safe Mode."""
     return await service.browser.scroll(direction=direction, amount=amount)
 
 
 @mcp.tool()
 async def go_back() -> dict[str, Any]:
-    """返回浏览器历史中的上一页。"""
+    """Go to the previous page. Disabled for Taobao Safe Mode."""
     return await service.browser.go_back()
 
 

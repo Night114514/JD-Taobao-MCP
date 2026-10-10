@@ -1,0 +1,50 @@
+name: Offline Python tests
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - fix/taobao-product-detail
+      - feat/taobao-data-completeness
+
+permissions:
+  contents: read
+
+concurrency:
+  group: offline-tests-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  offline-tests:
+    name: Windows / Python 3.13 / offline
+    runs-on: windows-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      PYTHONUTF8: '1'
+      PYTHON_DOTENV_DISABLED: '1'
+      PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1'
+      PIP_DISABLE_PIP_VERSION_CHECK: '1'
+    steps:
+      - name: Check out source
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          persist-credentials: false
+      - name: Set up Python 3.13
+        uses: actions/setup-python@e797f83bcb11b83ae66e0230d6156d7c80228e7c # v6.0.0
+        with:
+          python-version: '3.13'
+      - name: Install project dependencies from pyproject.toml
+        timeout-minutes: 5
+        run: python -m pip --isolated install .
+      - name: Check Python syntax without importing application code
+        run: python -m compileall -q jd_taobao_mcp server.py scripts tests
+      - name: Run complete offline unittest suite
+        timeout-minutes: 5
+        run: python scripts/ci_offline_tests.py
+      - name: Verify permanent Mock MCP stdio tests explicitly
+        timeout-minutes: 3
+        run: python scripts/ci_offline_tests.py --stdio-only

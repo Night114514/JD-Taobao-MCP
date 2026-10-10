@@ -1,8 +1,26 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
+
+
+def load_settings(project_root: Path) -> "Settings":
+    """Shared server/CLI configuration; relative runtime paths use the project."""
+    from dotenv import load_dotenv
+
+    root = project_root.resolve()
+    load_dotenv(root / ".env", override=False)
+    settings = Settings.from_env()
+
+    def anchored(path: Path) -> Path:
+        return (path if path.is_absolute() else root / path).resolve()
+
+    browsers_path = os.getenv("PLAYWRIGHT_BROWSERS_PATH", "").strip()
+    if browsers_path:
+        os.environ["PLAYWRIGHT_BROWSERS_PATH"] = str(anchored(Path(browsers_path).expanduser()))
+    return replace(settings, profile_dir=anchored(settings.profile_dir),
+                   artifacts_dir=anchored(settings.artifacts_dir))
 
 
 def _env_bool(name: str, default: bool) -> bool:
