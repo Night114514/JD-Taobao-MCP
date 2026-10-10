@@ -122,10 +122,12 @@ class BrowserController:
             if not running:
                 return {"running": False, "message": "浏览器尚未启动。"}
             page = await self._checked_page_unlocked()
+            title = await page.title()
+            self._ensure_controller_url(page.url)
             return {
                 "running": True,
                 "current_url": page.url,
-                "title": await page.title(),
+                "title": title,
                 "pages": len([p for p in self._context.pages if not p.is_closed()]),
                 "profile_dir": str(self.settings.profile_dir),
             }
@@ -148,6 +150,11 @@ class BrowserController:
             raise SafetyError(
                 "Taobao/Tmall cannot be used through the JD controller. "
                 "Use the guarded Taobao tools; no automatic recovery is attempted."
+            )
+        if self._taobao_guard is not None and not is_taobao_url(url):
+            raise SafetyError(
+                "JD cannot be used through the Taobao controller. "
+                "Operation stopped without automatic recovery."
             )
 
     async def _checked_page_unlocked(self) -> Page:
@@ -284,10 +291,12 @@ class BrowserController:
         self._ensure_controller_url(page.url)
         text = await page.locator("body").inner_text(timeout=5_000) if await page.locator("body").count() else ""
         self._ensure_controller_url(page.url)
+        title = await page.title()
+        self._ensure_controller_url(page.url)
         return {
             "success": True,
             "url": page.url,
-            "title": await page.title(),
+            "title": title,
             "http_status": status,
             "requires_user_verification": page_requires_user_verification(text, page.url),
             "message": (
@@ -340,6 +349,7 @@ class BrowserController:
                 self._taobao_guard.pause()
 
             cookies = await self._context.cookies() if self._context else []
+            self._ensure_controller_url(page.url)
             domain_token = "jd.com" if platform == "jd" else "taobao.com"
             relevant_cookie_names = sorted(
                 {
@@ -453,9 +463,12 @@ class BrowserController:
                 """,
                 limit,
             )
+            self._ensure_controller_url(page.url)
+            title = await page.title()
+            self._ensure_controller_url(page.url)
             return {
                 "url": page.url,
-                "title": await page.title(),
+                "title": title,
                 "count": len(elements),
                 "elements": elements,
                 "note": "ref 只对当前页面状态有效；页面刷新或点击后请重新调用 list_page_elements。",
@@ -556,6 +569,7 @@ class BrowserController:
             position = await page.evaluate(
                 "({x: Math.round(window.scrollX), y: Math.round(window.scrollY), height: document.documentElement.scrollHeight})"
             )
+            self._ensure_controller_url(page.url)
             return {"success": True, "direction": direction, "amount": amount, **position}
 
     async def go_back(self) -> dict[str, Any]:
@@ -568,14 +582,18 @@ class BrowserController:
                 pass
             await self._settle(page)
             self._ensure_controller_url(page.url)
-            return {"success": True, "url": page.url, "title": await page.title()}
+            title = await page.title()
+            self._ensure_controller_url(page.url)
+            return {"success": True, "url": page.url, "title": title}
 
     async def screenshot(self, full_page: bool = False) -> dict[str, Any]:
         async with self._lock:
             page = await self._checked_page_unlocked()
             timestamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
             path = self.settings.artifacts_dir / f"screenshot-{timestamp}.png"
-            await page.screenshot(path=str(path), full_page=full_page)
+            image = await page.screenshot(full_page=full_page)
+            self._ensure_controller_url(page.url)
+            path.write_bytes(image)
             return {
                 "success": True,
                 "path": str(path),
