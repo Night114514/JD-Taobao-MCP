@@ -967,7 +967,7 @@ def _fallback_reviews_from_text(
         )
 
         if positive:
-            if has_negative:
+            if has_negative or not any(term in content for term in _positive_terms()):
                 continue
         else:
             if not has_negative:

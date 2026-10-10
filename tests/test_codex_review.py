@@ -89,9 +89,22 @@ class ParserReviewTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([r["user"] for r in reviews], ["t***3", "a**8"])
         self.assertEqual([r["content"] for r in reviews], ["产品很好用", "非常满意推荐"])
 
+    def test_p2_unmasked_then_masked_not_merged(self):
+        text = "买家甲 2026-09-01 产品很好用 t***3 2026-09-02 质量太糟糕"
+        reviews = _fallback_reviews_from_text(text, positive=True)
+        self.assertEqual(len(reviews), 1)
+        self.assertEqual(reviews[0]["content"], "产品很好用")
 
+    def test_p2_neutral_not_positive(self):
+        self.assertEqual(_fallback_reviews_from_text("买家甲 2026-09-01 昨天收到包裹", positive=True), [])
 
+    def test_p2_unknown_complaint_not_positive(self):
+        self.assertEqual(_fallback_reviews_from_text("买家甲 2026-09-01 质量太糟糕", positive=True), [])
 
+    def test_p2_positive_and_negative_controls(self):
+        text = "买家甲 2026-09-01 非常满意很好用 买家乙 2026-09-02 非常差评不能用"
+        self.assertEqual(len(_fallback_reviews_from_text(text, positive=True)), 1)
+        self.assertEqual(len(_fallback_reviews_from_text(text, positive=False)), 1)
 
 
 
