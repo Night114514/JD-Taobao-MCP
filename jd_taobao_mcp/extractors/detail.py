@@ -356,6 +356,18 @@ async def extract_product_detail(
             limit=2,
         )
 
+    if platform == "taobao" and raw_review_text:
+        # A broad selector can select only a heading/count. Retry each missing
+        # category against the full body without replacing structured results.
+        if not high_praise_reviews:
+            high_praise_reviews = _fallback_reviews_from_text(
+                body_text_all, positive=True, limit=5,
+            )
+        if not high_dissatisfied_reviews:
+            high_dissatisfied_reviews = _fallback_reviews_from_text(
+                body_text_all, positive=False, limit=2,
+            )
+
     shop = compact_text(raw.get("shop"), 200)
     price = parse_price(price_text)
     price_source = "dom"

@@ -106,7 +106,15 @@ class ParserReviewTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(_fallback_reviews_from_text(text, positive=True)), 1)
         self.assertEqual(len(_fallback_reviews_from_text(text, positive=False)), 1)
 
+    async def test_p2_heading_selector_falls_back_to_body(self):
+        body = "用户评价·2 买家甲 2026-09-01 非常满意很好用 买家乙 2026-09-02 非常差评不能用 查看全部评价"
+        result = await self.extract(body, "用户评价 2")
+        self.assertEqual(len(result["high_praise_reviews"]), 1)
+        self.assertEqual(len(result["high_dissatisfied_reviews"]), 1)
 
+    async def test_p2_valid_selector_control(self):
+        result = await self.extract("No reviews", "买家甲 2026-09-01 非常满意很好用")
+        self.assertEqual(len(result["high_praise_reviews"]), 1)
 
 
 class ExtractionFailureTests(unittest.IsolatedAsyncioTestCase):
