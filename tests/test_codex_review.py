@@ -83,6 +83,11 @@ class ParserReviewTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(params["网卡插口"], "M.2")
         self.assertEqual(len(params), 11)
 
+    def test_p2_masked_names_and_boundaries(self):
+        text = "t***3 2026-09-01 产品很好用 a**8 2026-09-02 非常满意推荐"
+        reviews = _fallback_reviews_from_text(text, positive=True)
+        self.assertEqual([r["user"] for r in reviews], ["t***3", "a**8"])
+        self.assertEqual([r["content"] for r in reviews], ["产品很好用", "非常满意推荐"])
 
 
 

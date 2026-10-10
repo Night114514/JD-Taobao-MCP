@@ -941,10 +941,10 @@ def _fallback_reviews_from_text(
         segment = text
 
     review_re = re.compile(
-        r"(?P<user>[A-Za-z0-9_\u4e00-\u9fff]{2,30})\s+"
+        r"(?P<user>[A-Za-z0-9_*\u4e00-\u9fff]{2,30})\s+"
         r"(?P<date>20\d{2}-\d{2}-\d{2})\s+"
         r"(?P<content>.*?)"
-        r"(?=(?:[A-Za-z0-9_\u4e00-\u9fff]{2,30}\s+"
+        r"(?=(?:[A-Za-z0-9_*\u4e00-\u9fff]{2,30}\s+"
         r"20\d{2}-\d{2}-\d{2}\s+)|$)"
     )
 
