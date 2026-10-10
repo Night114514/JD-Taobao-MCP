@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -10,6 +11,18 @@ from .config import Settings
 from .extractors import extract_jd_search, extract_product_detail, extract_taobao_search
 from .safety import SafetyError, ensure_allowed_url, page_requires_user_verification
 from .taobao_guard import is_taobao_auth_url
+
+
+@contextmanager
+def _pause_on_extraction_failure(browser: BrowserController):
+    try:
+        yield
+    except Exception as exc:
+        try:
+            browser.pause_taobao_automation("extraction_failed")
+        except Exception as pause_error:
+            exc.add_note(f"Persisting extraction pause also failed: {pause_error!r}")
+        raise
 
 
 class ShoppingBrowserService:
@@ -81,11 +94,12 @@ class ShoppingBrowserService:
                 }
 
             _ensure_page_platform(page, platform)
-            items = (
-                await extract_jd_search(page, max_results * 2)
-                if platform == "jd"
-                else await extract_taobao_search(page, max_results * 2)
-            )
+            with _pause_on_extraction_failure(browser):
+                items = (
+                    await extract_jd_search(page, max_results * 2)
+                    if platform == "jd"
+                    else await extract_taobao_search(page, max_results * 2)
+                )
             await self._assert_extraction_page(browser, page, platform)
             if requires_verification and not items:
                 return {
@@ -187,9 +201,10 @@ class ShoppingBrowserService:
                 }
             await self._prepare_product_detail_page(page, platform)
             await self._assert_extraction_page(browser, page, platform)
-            detail = await extract_product_detail(
-                page, platform, original_url=original_url
-            )
+            with _pause_on_extraction_failure(browser):
+                detail = await extract_product_detail(
+                    page, platform, original_url=original_url
+                )
             await self._assert_extraction_page(browser, page, platform)
             if platform == "taobao":
                 unavailable_markers = (
@@ -281,7 +296,8 @@ class ShoppingBrowserService:
                     "product_like_data": detail,
                     "detail_output_contract": _detail_output_contract(),
                 }
-            detail = await extract_product_detail(page, platform)
+            with _pause_on_extraction_failure(browser):
+                detail = await extract_product_detail(page, platform)
             await self._assert_extraction_page(browser, page, platform)
         _apply_detail_output_contract(detail)
         return {

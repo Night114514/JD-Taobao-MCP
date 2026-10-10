@@ -62,3 +62,36 @@ class NavigationInspectionTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_p2_click_normal_control(self):
         self.assertTrue((await self.jd.click("e1"))["success"])
+
+
+
+
+class ExtractionFailureTests(unittest.IsolatedAsyncioTestCase):
+    setUp = current.CurrentPageVerificationTests.setUp
+
+    async def check_failure(self, operation):
+        error = RuntimeError("synthetic evaluate context destroyed")
+        self.page.evaluate = AsyncMock(side_effect=error)
+        self.browser.navigate = AsyncMock(return_value={"url": current.URL})
+        self.service._prepare_product_detail_page = AsyncMock()
+        self.service._open_search_page = AsyncMock(return_value={"url": current.URL})
+        with patch("jd_taobao_mcp.service.extract_product_detail", extract_product_detail):
+            with self.assertRaises(RuntimeError) as caught:
+                if operation == "detail":
+                    await self.service.get_product_detail(current.URL)
+                elif operation == "current":
+                    await self.service.extract_current_page()
+                else:
+                    await self.service.search_products("taobao", "synthetic")
+        self.assertIs(caught.exception, error)
+        self.page.evaluate.assert_awaited_once()
+        self.assertTrue(TaobaoNavigationGuard(self.browser._taobao_guard.state_path).is_paused())
+
+    async def test_p2_detail_evaluate_failure_pauses(self):
+        await self.check_failure("detail")
+
+    async def test_p2_current_evaluate_failure_pauses(self):
+        await self.check_failure("current")
+
+    async def test_p2_search_evaluate_failure_pauses(self):
+        await self.check_failure("search")
