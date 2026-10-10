@@ -149,6 +149,11 @@ class BrowserController:
                 "Taobao/Tmall cannot be used through the JD controller. "
                 "Use the guarded Taobao tools; no automatic recovery is attempted."
             )
+        if self._taobao_guard is not None and not is_taobao_url(url):
+            raise SafetyError(
+                "JD cannot be used through the Taobao controller. "
+                "Operation stopped without automatic recovery."
+            )
 
     async def _checked_page_unlocked(self) -> Page:
         page = await self._active_page_unlocked()
