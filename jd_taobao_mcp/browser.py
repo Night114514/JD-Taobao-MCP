@@ -188,6 +188,8 @@ class BrowserController:
                 await body.inner_text(timeout=2_000)
                 if await body.count() else ""
             )
+            current_url = page.url
+            self._ensure_controller_url(current_url)
         except Exception as exc:
             self._taobao_guard.pause("pre_navigation_inspection_failed")
             raise SafetyError(
@@ -195,7 +197,7 @@ class BrowserController:
                 "Automation paused."
             ) from exc
 
-        if page_requires_user_verification(text, current_url):
+        if is_taobao_auth_url(current_url) or page_requires_user_verification(text, current_url):
             self._taobao_guard.pause()
             raise SafetyError(
                 "Taobao verification detected. Automation paused."
