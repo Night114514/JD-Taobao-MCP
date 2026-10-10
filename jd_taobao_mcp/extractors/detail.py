@@ -648,6 +648,8 @@ def _taobao_parameters_from_text(
         "\u6210\u8272",
     )
 
+    expected_labels = tuple(dict.fromkeys(expected_labels + _DETAIL_PARAM_LABELS))
+
     # There can be more than one "parameter info" label:
     # one in the navigation bar and another above the actual data.
     # Score every parameter-info -> graphic-detail region and keep
@@ -731,12 +733,14 @@ def _taobao_parameters_from_text(
         "\u6210\u8272",
     )
 
+    forward_labels = tuple(dict.fromkeys(forward_labels + _DETAIL_PARAM_LABELS))
+
     positions: list[tuple[int, str]] = []
 
     for label in forward_labels:
-        pos = segment.find(label)
-        if pos >= 0:
-            positions.append((pos, label))
+        match = re.search(rf"(?<!\S){re.escape(label)}(?!\S)", segment)
+        if match:
+            positions.append((match.start(), label))
 
     positions.sort(key=lambda item: item[0])
 

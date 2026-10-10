@@ -64,6 +64,31 @@ class NavigationInspectionTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue((await self.jd.click("e1"))["success"])
 
 
+class ParserReviewTests(unittest.IsolatedAsyncioTestCase):
+    async def extract(self, body, selected=""):
+        return await extract_product_detail(make_page(raw={
+            "title": "Synthetic product", "body_text": body, "body_text_all": body,
+            "review_text": selected, "meta": {},
+        }), "taobao")
+
+    async def test_p2_generic_parameters(self):
+        result = await self.extract("参数信息 品牌 Example 型号 K100 额定功率 1500W 额定电压 220V 图文详情")
+        self.assertEqual({p["name"]: p["value"] for p in result["product_parameters"]},
+                         {"品牌": "Example", "型号": "K100", "额定功率": "1500W", "额定电压": "220V"})
+
+    async def test_p2_network_card_control(self):
+        result = await self.extract(BODY)
+        params = {p["name"]: p["value"] for p in result["product_parameters"]}
+        self.assertEqual(params["型号"], "MT7925")
+        self.assertEqual(params["网卡插口"], "M.2")
+        self.assertEqual(len(params), 11)
+
+
+
+
+
+
+
 
 
 class ExtractionFailureTests(unittest.IsolatedAsyncioTestCase):
