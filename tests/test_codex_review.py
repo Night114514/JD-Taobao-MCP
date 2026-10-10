@@ -49,3 +49,16 @@ class NavigationInspectionTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_p1_normal_control(self):
         await self.check_transition(platforms.TAOBAO)
+
+    async def test_p2_click_title_redirect(self):
+        async def title():
+            self.page.url = platforms.TAOBAO
+            return "Foreign"
+        self.page.title.side_effect = title
+        with self.assertRaises(SafetyError):
+            await self.jd.click("e1")
+        self.locator.click.assert_awaited_once()
+        self.page.go_back.assert_not_awaited()
+
+    async def test_p2_click_normal_control(self):
+        self.assertTrue((await self.jd.click("e1"))["success"])

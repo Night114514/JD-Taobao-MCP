@@ -512,11 +512,13 @@ class BrowserController:
                     page = self._page
                     await self._settle(page)
             self._ensure_controller_url(page.url)
+            title = await page.title()
+            self._ensure_controller_url(page.url)
             return {
                 "success": True,
                 "clicked_ref": ref,
                 "url": page.url,
-                "title": await page.title(),
+                "title": title,
                 "message": "点击完成。页面状态已变化，请重新获取元素列表。",
             }
 
