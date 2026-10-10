@@ -285,23 +285,26 @@ async def extract_product_detail(
         # Prefer visible/layout-aware innerText. Taobao summary parameter cards
         # rely on whitespace/order that can be lost in document.body.textContent.
         visible_taobao_parameters = _taobao_parameters_from_text(body_text)
-        all_taobao_parameters = _taobao_parameters_from_text(body_text_all)
-        taobao_parameters = _merge_parameters(
-            visible_taobao_parameters,
-            all_taobao_parameters,
-        )
+        # textContent may contain hidden content. Preserve it separately until
+        # evidence/conflicts are built; do not manufacture it from innerText.
+        all_taobao_parameters = _taobao_parameters_from_text(raw.get("body_text_all") or "")
 
-        if taobao_parameters:
-            product_parameters = taobao_parameters
-        else:
-            product_parameters = _merge_parameters(
-                _normalize_parameters(
-                    raw.get("product_parameters", [])
-                ),
-                _normalize_parameters(
-                    raw.get("detail_product_parameters", [])
-                ),
-            )
+        parameter_sources = (
+            ("visible_text", visible_taobao_parameters),
+            (
+                "dom_parameters",
+                _normalize_parameters(raw.get("product_parameters", [])),
+            ),
+            (
+                "dom_detail",
+                _normalize_parameters(raw.get("detail_product_parameters", [])),
+            ),
+            ("json_ld", _json_ld_product_parameters(json_product)),
+            ("text_content", all_taobao_parameters),
+        )
+        product_parameters = _merge_parameters(
+            *(items for _, items in parameter_sources)
+        )
     else:
         product_parameters = _merge_parameters(
             _parameters_from_detail_text(body_text),
@@ -316,6 +319,17 @@ async def extract_product_detail(
     if not product_parameters:
         product_parameters = _fallback_parameters_from_text(
             body_text
+        )
+        if platform == "taobao":
+            parameter_sources = (
+                ("fallback_text", product_parameters),
+            )
+
+    if platform == "taobao":
+        parameter_evidence, parameter_conflicts = (
+            _build_taobao_parameter_evidence(
+                product_parameters, parameter_sources
+            )
         )
 
     high_praise_reviews = _normalize_reviews(
@@ -405,6 +419,14 @@ async def extract_product_detail(
         "canonical_url": normalize_url(page.url, raw.get("meta", {}).get("canonical")),
         "specifications": specs,
         "product_parameters": product_parameters,
+        **(
+            {
+                "product_parameter_evidence": parameter_evidence,
+                "product_parameter_conflicts": parameter_conflicts,
+            }
+            if platform == "taobao"
+            else {}
+        ),
         "high_praise_reviews": high_praise_reviews,
         "high_dissatisfied_reviews": high_dissatisfied_reviews,
         "images": normalized_images,
@@ -560,6 +582,106 @@ def _selectors(platform: str) -> dict[str, list[str]]:
         "review_time": ["[class*='time']", "[class*='Time']", "[class*='date']", "[class*='Date']"],
         "review_variant": ["[class*='sku']", "[class*='Sku']", "[class*='spec']", "[class*='Spec']"],
     }
+
+
+def _build_taobao_parameter_evidence(
+    selected: list[dict[str, str]],
+    sources: tuple[tuple[str, list[dict[str, str]]], ...],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    evidence = []
+    conflicts = []
+
+    for item in selected:
+        name = item["name"]
+        chosen_value = item["value"]
+        chosen_source = "unknown"
+        corroborated_by = []
+        alternatives = []
+        seen_alternatives = set()
+
+        for source, parameters in sources:
+            for candidate in parameters:
+                if candidate.get("name") != name:
+                    continue
+
+                value = candidate.get("value")
+                if not value:
+                    continue
+
+                if value == chosen_value:
+                    if chosen_source == "unknown":
+                        chosen_source = source
+                    elif (
+                        source != chosen_source
+                        and source not in corroborated_by
+                    ):
+                        corroborated_by.append(source)
+                else:
+                    key = (source, value)
+                    if key not in seen_alternatives:
+                        seen_alternatives.add(key)
+                        alternatives.append({
+                            "source": source,
+                            "value": value,
+                        })
+
+        evidence.append({
+            "name": name,
+            "value": chosen_value,
+            "source": chosen_source,
+            "corroborated_by": corroborated_by,
+        })
+
+        if alternatives:
+            conflicts.append({
+                "name": name,
+                "selected_value": chosen_value,
+                "selected_source": chosen_source,
+                "alternatives": alternatives,
+            })
+
+    return evidence, conflicts
+
+
+def _json_ld_product_parameters(
+    product: dict[str, Any],
+) -> list[dict[str, str]]:
+    properties = product.get("additionalProperty", [])
+
+    if isinstance(properties, dict):
+        properties = [properties]
+    if not isinstance(properties, list):
+        return []
+
+    output = []
+
+    for item in properties[:80]:
+        if not isinstance(item, dict):
+            continue
+
+        name = item.get("name")
+        value = item.get("value")
+
+        if not isinstance(name, str):
+            continue
+        if isinstance(value, bool) or not isinstance(
+            value, (str, int, float)
+        ):
+            continue
+
+        name = compact_text(name, 120)
+        value = compact_text(str(value), 500)
+
+        if not name or not value:
+            continue
+
+        output.append({
+            "name": name,
+            "value": value,
+            "group": "JSON-LD",
+        })
+
+    return output
 
 
 def _normalize_parameters(items: list[Any]) -> list[dict[str, str]]:
