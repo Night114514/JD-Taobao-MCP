@@ -68,6 +68,7 @@ class ShoppingBrowserService:
                 requires_verification
                 or nav.get("requires_user_verification", False)
             ):
+                browser.pause_taobao_automation("login_or_verification_required")
                 return {
                     "success": False,
                     "platform": platform,
@@ -85,7 +86,7 @@ class ShoppingBrowserService:
                 if platform == "jd"
                 else await extract_taobao_search(page, max_results * 2)
             )
-            _ensure_page_platform(page, platform)
+            await self._assert_extraction_page(browser, page, platform)
             if requires_verification and not items:
                 return {
                     "success": False,
@@ -158,6 +159,7 @@ class ShoppingBrowserService:
                 requires_verification
                 or nav.get("requires_user_verification", False)
             ):
+                browser.pause_taobao_automation("login_or_verification_required")
                 return {
                     "success": False,
                     "platform": platform,
@@ -184,11 +186,11 @@ class ShoppingBrowserService:
                     ),
                 }
             await self._prepare_product_detail_page(page, platform)
-            _ensure_page_platform(page, platform)
+            await self._assert_extraction_page(browser, page, platform)
             detail = await extract_product_detail(
                 page, platform, original_url=original_url
             )
-            _ensure_page_platform(page, platform)
+            await self._assert_extraction_page(browser, page, platform)
             if platform == "taobao":
                 unavailable_markers = (
                     "\u8a72\u5546\u54c1\u4e2d\u570b\u9999\u6e2f\u4e0d\u53ef\u552e\u8ce3",
@@ -217,6 +219,27 @@ class ShoppingBrowserService:
             }
         )
         return detail
+
+    async def _assert_extraction_page(
+        self, browser: BrowserController, page: Any, platform: str
+    ) -> None:
+        """Discard results if an awaited operation exposed login/verification."""
+        try:
+            _ensure_page_platform(page, platform)
+            blocked = is_taobao_auth_url(page.url) or page_requires_user_verification("", page.url)
+            if not blocked:
+                body = page.locator("body")
+                if not await body.count():
+                    raise SafetyError("Page DOM unavailable after extraction operation.")
+                text = await body.inner_text(timeout=5_000)
+                _ensure_page_platform(page, platform)
+                blocked = is_taobao_auth_url(page.url) or page_requires_user_verification(text, page.url)
+        except Exception as exc:
+            browser.pause_taobao_automation("extraction_inspection_failed")
+            raise SafetyError("Cannot inspect extraction page; results discarded.") from exc
+        if blocked:
+            browser.pause_taobao_automation("login_or_verification_required")
+            raise SafetyError("Login or verification detected during extraction; results discarded.")
 
     async def extract_current_page(self) -> dict[str, Any]:
         # Keep the original controller: a snapshot must not switch profiles.
@@ -259,7 +282,7 @@ class ShoppingBrowserService:
                     "detail_output_contract": _detail_output_contract(),
                 }
             detail = await extract_product_detail(page, platform)
-            _ensure_page_platform(page, platform)
+            await self._assert_extraction_page(browser, page, platform)
         _apply_detail_output_contract(detail)
         return {
             "success": True,
