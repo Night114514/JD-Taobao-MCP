@@ -370,6 +370,18 @@ async def extract_product_detail(
             limit=2,
         )
 
+    if platform == "taobao" and raw_review_text:
+        # A broad selector can select only a heading/count. Retry each missing
+        # category against the full body without replacing structured results.
+        if not high_praise_reviews:
+            high_praise_reviews = _fallback_reviews_from_text(
+                body_text_all, positive=True, limit=5,
+            )
+        if not high_dissatisfied_reviews:
+            high_dissatisfied_reviews = _fallback_reviews_from_text(
+                body_text_all, positive=False, limit=2,
+            )
+
     shop = compact_text(raw.get("shop"), 200)
     price = parse_price(price_text)
     price_source = "dom"
@@ -770,6 +782,8 @@ def _taobao_parameters_from_text(
         "\u6210\u8272",
     )
 
+    expected_labels = tuple(dict.fromkeys(expected_labels + _DETAIL_PARAM_LABELS))
+
     # There can be more than one "parameter info" label:
     # one in the navigation bar and another above the actual data.
     # Score every parameter-info -> graphic-detail region and keep
@@ -853,12 +867,14 @@ def _taobao_parameters_from_text(
         "\u6210\u8272",
     )
 
+    forward_labels = tuple(dict.fromkeys(forward_labels + _DETAIL_PARAM_LABELS))
+
     positions: list[tuple[int, str]] = []
 
     for label in forward_labels:
-        pos = segment.find(label)
-        if pos >= 0:
-            positions.append((pos, label))
+        match = re.search(rf"(?<!\S){re.escape(label)}(?!\S)", segment)
+        if match:
+            positions.append((match.start(), label))
 
     positions.sort(key=lambda item: item[0])
 
@@ -1059,10 +1075,10 @@ def _fallback_reviews_from_text(
         segment = text
 
     review_re = re.compile(
-        r"(?P<user>[A-Za-z0-9_\u4e00-\u9fff]{2,30})\s+"
+        r"(?P<user>[A-Za-z0-9_*\u4e00-\u9fff]{2,30})\s+"
         r"(?P<date>20\d{2}-\d{2}-\d{2})\s+"
         r"(?P<content>.*?)"
-        r"(?=(?:[A-Za-z0-9_\u4e00-\u9fff]{2,30}\s+"
+        r"(?=(?:[A-Za-z0-9_*\u4e00-\u9fff]{2,30}\s+"
         r"20\d{2}-\d{2}-\d{2}\s+)|$)"
     )
 
@@ -1085,7 +1101,7 @@ def _fallback_reviews_from_text(
         )
 
         if positive:
-            if has_negative:
+            if has_negative or not any(term in content for term in _positive_terms()):
                 continue
         else:
             if not has_negative:
