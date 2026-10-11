@@ -162,11 +162,14 @@ async def take_screenshot(full_page: bool = False) -> dict[str, Any]:
 @mcp.tool()
 async def browser_close() -> dict[str, Any]:
     """关闭浏览器；持久化登录资料仍保留在本地独立目录。"""
-    results = {
-        "jd": await service.jd_browser.close(),
-        "taobao": await service.taobao_browser.close(),
-    }
-    return {"success": True, "results": results}
+    results = {}
+    for name, controller in (("jd", service.jd_browser), ("taobao", service.taobao_browser)):
+        try:
+            results[name] = await controller.close()
+        except Exception as exc:
+            results[name] = {"success": False, "error": f"{type(exc).__name__}: {exc}"}
+    return {"success": all(result.get("success") is True for result in results.values()),
+            "results": results}
 
 
 def main() -> None:

@@ -611,12 +611,28 @@ class BrowserController:
 
     async def close(self) -> dict[str, Any]:
         async with self._lock:
+            errors: dict[str, str] = {}
             if self._context is not None:
-                await self._context.close()
+                try:
+                    await self._context.close()
+                except Exception as exc:
+                    errors["context"] = f"{type(exc).__name__}: {exc}"
+                else:
+                    self._context = None
+                    self._page = None
             if self._playwright is not None:
-                await self._playwright.stop()
-            self._context = None
-            self._playwright = None
+                try:
+                    await self._playwright.stop()
+                except Exception as exc:
+                    errors["driver"] = f"{type(exc).__name__}: {exc}"
+                else:
+                    self._playwright = None
+                    # A stopped driver invalidates any remaining context/page.
+                    self._context = None
+                    self._page = None
+            if errors:
+                return {"success": False, "errors": errors,
+                        "message": "Browser cleanup incomplete; inspect errors."}
             self._page = None
             return {"success": True, "message": "浏览器已关闭，登录状态仍保存在独立资料目录中。"}
 

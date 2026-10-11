@@ -51,8 +51,81 @@ class MissingBodyTests(unittest.IsolatedAsyncioTestCase):
         await self.check("about:blank", True, False)
 
 
+class ServerCleanupTests(unittest.IsolatedAsyncioTestCase):
+    async def check(self, jd_fail=False, tb_fail=False, returned_failure=False):
+        jd = AsyncMock(return_value={"success": True})
+        tb = AsyncMock(return_value={"success": True})
+        if jd_fail:
+            jd.side_effect = RuntimeError("JD disconnected")
+        if tb_fail:
+            tb.side_effect = ValueError("Taobao disconnected")
+        if returned_failure:
+            jd.return_value = {"success": False, "errors": {"context": "synthetic"}}
+        service = SimpleNamespace(jd_browser=SimpleNamespace(close=jd), taobao_browser=SimpleNamespace(close=tb))
+        with patch.object(server, "service", service):
+            result = await server.browser_close()
+        jd.assert_awaited_once()
+        tb.assert_awaited_once()
+        self.assertEqual(result["success"], not (jd_fail or tb_fail or returned_failure))
+        if jd_fail:
+            self.assertIn("JD disconnected", str(result))
+            self.assertIn("RuntimeError", str(result))
+        if tb_fail:
+            self.assertIn("Taobao disconnected", str(result))
+            self.assertIn("ValueError", str(result))
+
+    async def test_jd_failure_still_closes_taobao(self):
+        await self.check(jd_fail=True)
+
+    async def test_taobao_failure_reported(self):
+        await self.check(tb_fail=True)
+
+    async def test_both_failures_retained(self):
+        await self.check(jd_fail=True, tb_fail=True)
+
+    async def test_normal_close_control(self):
+        await self.check()
+
+    async def test_returned_failure_not_success(self):
+        await self.check(returned_failure=True)
 
 
+class ControllerCleanupTests(unittest.IsolatedAsyncioTestCase):
+    setUp = fixtures.CrossPlatformGuardTests.setUp
+
+    async def check(self, context_fail=False, driver_fail=False):
+        context = Mock(close=AsyncMock())
+        driver = Mock(stop=AsyncMock())
+        self.jd._context = context
+        self.jd._playwright = driver
+        if context_fail:
+            context.close.side_effect = RuntimeError("context disconnected")
+        if driver_fail:
+            driver.stop.side_effect = ValueError("driver disconnected")
+        result = await self.jd.close()
+        context.close.assert_awaited_once()
+        driver.stop.assert_awaited_once()
+        self.assertEqual(result["success"], not (context_fail or driver_fail))
+        if context_fail:
+            self.assertIn("context disconnected", str(result))
+        if driver_fail:
+            self.assertIn("driver disconnected", str(result))
+        if not driver_fail:
+            self.assertIsNone(self.jd._playwright)
+            self.assertIsNone(self.jd._context)
+            self.assertIsNone(self.jd._page)
+
+    async def test_context_failure_still_stops_driver(self):
+        await self.check(context_fail=True)
+
+    async def test_driver_failure_reported(self):
+        await self.check(driver_fail=True)
+
+    async def test_both_cleanup_failures_retained(self):
+        await self.check(context_fail=True, driver_fail=True)
+
+    async def test_normal_cleanup_control(self):
+        await self.check()
 
 
 class BodyTransferContractTests(unittest.IsolatedAsyncioTestCase):
