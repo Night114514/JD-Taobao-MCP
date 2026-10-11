@@ -49,3 +49,35 @@ class MissingBodyTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_blank_without_body_control(self):
         await self.check("about:blank", True, False)
+
+
+
+
+
+
+class BodyTransferContractTests(unittest.IsolatedAsyncioTestCase):
+    async def test_truncation_is_disclosed(self):
+        page = make_page(raw={"title": "Product", "body_text": "Product",
+                              "body_text_all": "x" * 80000, "body_text_all_truncated": True})
+        result = await extract_product_detail(page, "taobao")
+        self.assertTrue(result["body_text_all_truncated"])
+
+    async def test_hidden_generic_parameters_preserved(self):
+        page = make_page(raw={"title": "Product", "body_text": "Product",
+            "body_text_all": "参数信息 品牌 Example 型号 K1 额定功率 100W 额定电压 220V 图文详情"})
+        result = await extract_product_detail(page, "taobao")
+        self.assertEqual(len(result["product_parameters"]), 4)
+
+    async def test_hidden_network_and_review_fallback_preserved(self):
+        page = make_page(raw={"title": "Product", "body_text": "Product",
+                              "body_text_all": BODY, "review_text": "用户评价 2"})
+        result = await extract_product_detail(page, "taobao")
+        self.assertEqual(len(result["product_parameters"]), 11)
+        self.assertEqual(len(result["high_praise_reviews"]), 2)
+
+    async def test_absent_tail_not_fabricated(self):
+        page = make_page(raw={"title": "Product", "body_text": "Product",
+                              "body_text_all": "x" * 80000, "body_text_all_truncated": True})
+        result = await extract_product_detail(page, "taobao")
+        self.assertEqual(result["product_parameters"], [])
+        self.assertEqual(result["high_praise_reviews"], [])
