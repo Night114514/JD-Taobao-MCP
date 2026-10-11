@@ -144,3 +144,20 @@ class ActiveControllerTests(unittest.IsolatedAsyncioTestCase):
                 with self.subTest(action=action), self.assertRaises(SafetyError):
                     await action()
         self.jd._start_unlocked.assert_not_awaited()
+
+
+class CanonicalEncodingTests(unittest.TestCase):
+    def test_encoded_delimiters_keep_query_boundaries(self):
+        for item, sku in (("123%26foo%3Dbar", "456%23fragment"),
+                          ("123%3D456", "1%26x%3D2"), ("12%2526", "45%2B6")):
+            with self.subTest(item=item, sku=sku):
+                original = f"https://item.taobao.com/item.htm?id={item}&skuId={sku}"
+                result = urlparse(_canonical_detail_url(original))
+                self.assertEqual(parse_qs(result.query), parse_qs(urlparse(original).query))
+                self.assertEqual(result.fragment, "")
+
+    def test_normal_mobile_and_idempotence(self):
+        original = "https://new.m.taobao.com/detail.htm?id=123&skuId=456&tracking=abc"
+        result = _canonical_detail_url(original)
+        self.assertEqual(result, "https://item.taobao.com/item.htm?id=123&skuId=456")
+        self.assertEqual(_canonical_detail_url(result), result)
