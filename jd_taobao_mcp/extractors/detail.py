@@ -218,6 +218,17 @@ async def extract_product_detail(
             let node;
             while ((node = walker.nextNode())) {
               const text = node.nodeValue || '';
+              if (!text) continue;
+              // Preserve token boundaries without duplicating existing whitespace.
+              if (bodyTextLength && !/\s$/.test(bodyTextParts[bodyTextParts.length - 1])
+                  && !/^\s/.test(text)) {
+                if (bodyTextLength === bodyTextLimit) {
+                  bodyTextAllTruncated = true;
+                  break;
+                }
+                bodyTextParts.push('\n');
+                bodyTextLength += 1;
+              }
               const remaining = bodyTextLimit - bodyTextLength;
               bodyTextParts.push(text.slice(0, remaining));
               bodyTextLength += Math.min(text.length, remaining);

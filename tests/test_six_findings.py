@@ -196,3 +196,12 @@ class ParameterSourceMergeTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn({"source": "dom_parameters", "value": "Other"}, conflicts["品牌"]["alternatives"])
             self.assertIn({"source": "dom_detail", "value": "红色"}, conflicts["颜色"]["alternatives"])
             self.assertIn("dom_parameters", str(result["product_parameter_evidence"]))
+
+    async def test_separated_review_and_parameters_parse(self):
+        body = TEXT + " 用户评价·1 t***3\n2026-09-01\n很好用非常满意 查看全部评价"
+        result = await extract_product_detail(make_page(raw={
+            "title": "Product", "body_text": "Product", "body_text_all": body,
+            "review_text": "用户评价 1",
+        }), "taobao")
+        self.assertEqual(len(result["product_parameters"]), 3)
+        self.assertEqual(len(result["high_praise_reviews"]), 1)

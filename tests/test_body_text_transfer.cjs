@@ -65,6 +65,33 @@ const cases = [
     assert.ok(Buffer.byteLength(JSON.stringify(r.body_text_all),'utf8') <= 480002);
   }],
 ];
+cases.push(
+  ['separate reviewer date and content nodes retain boundaries', () => {
+    const r=run([['div','t***3'],['div','2026-09-01'],['div','很好用']]);
+    assert.match(r.body_text_all, /^t\*\*\*3\s+2026-09-01\s+很好用$/);
+    assert.equal(r.body_text_all_truncated,false);
+  }],
+  ['separate specification labels and values retain boundaries', () => {
+    const r=run([['div','品牌'],['span','Example'],['div','型号'],['span','K1']]);
+    assert.match(r.body_text_all, /^品牌\s+Example\s+型号\s+K1$/);
+  }],
+  ['separator counts toward exact transfer limit', () => {
+    const r=run([['div','x'.repeat(LIMIT-2)],['span','Y']]);
+    assert.equal(r.body_text_all.length,LIMIT);
+    assert.match(r.body_text_all, /x\sY$/);
+    assert.equal(r.body_text_all_truncated,false);
+  }],
+  ['separator cannot push transfer over limit', () => {
+    const r=run([['div','x'.repeat(LIMIT-1)],['span','YZ']]);
+    assert.equal(r.body_text_all.length,LIMIT);
+    assert.equal(r.body_text_all_truncated,true);
+  }],
+  ['empty and excluded tail do not falsely mark truncation', () => {
+    const r=run([['div','x'.repeat(LIMIT)],['span',''],['script','ignored'],['template','ignored']]);
+    assert.equal(r.body_text_all.length,LIMIT);
+    assert.equal(r.body_text_all_truncated,false);
+  }],
+);
 let failures=0;
 for(const [name,test] of cases) {
   try {test(); console.log('PASS '+name);}
