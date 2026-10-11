@@ -111,3 +111,36 @@ class LoginConsistencyTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_observed_auth_not_erased_by_later_redirect(self):
         await self.check(LOGIN, cookies=True, transition=fixtures.TAOBAO, expected=True)
+
+
+class ActiveControllerTests(unittest.IsolatedAsyncioTestCase):
+    setUp = fixtures.CrossPlatformGuardTests.setUp
+
+    async def test_start_selects_taobao_for_generic_reads(self):
+        tb = self.service.taobao_browser
+        jd = self.service.jd_browser
+        tb.start = AsyncMock(return_value={"success": True})
+        for browser, name in ((tb, "taobao"), (jd, "jd")):
+            browser.snapshot = AsyncMock(return_value={"controller": name})
+            browser.list_elements = AsyncMock(return_value={"controller": name})
+        self.assertIs(self.service.browser, jd)
+        with patch.object(server, "service", self.service):
+            await server.browser_start()
+            self.assertEqual((await server.page_snapshot())["controller"], "taobao")
+            self.assertEqual((await server.list_page_elements())["controller"], "taobao")
+        jd.snapshot.assert_not_awaited()
+        jd.list_elements.assert_not_awaited()
+        tb.start.assert_awaited_once()
+        self.assertNotEqual(tb.settings.profile_dir, jd.settings.profile_dir)
+
+    async def test_start_keeps_taobao_interaction_denials(self):
+        tb = self.service.taobao_browser
+        tb.start = AsyncMock(return_value={"success": True})
+        with patch.object(server, "service", self.service):
+            await server.browser_start()
+            for action in (lambda: server.click_page_element("e1"),
+                           lambda: server.type_into_element("e1", "text"),
+                           server.scroll_page, server.go_back):
+                with self.subTest(action=action), self.assertRaises(SafetyError):
+                    await action()
+        self.jd._start_unlocked.assert_not_awaited()
