@@ -164,8 +164,9 @@ class ShoppingBrowserService:
             page = await browser.get_page()
             _ensure_page_platform(page, platform)
             body_text = ""
-            if await page.locator("body").count():
-                body_text = await page.locator("body").inner_text(timeout=5_000)
+            with _pause_on_extraction_failure(browser):
+                if await page.locator("body").count():
+                    body_text = await page.locator("body").inner_text(timeout=5_000)
             requires_verification = page_requires_user_verification(
                 body_text, page.url
             )
