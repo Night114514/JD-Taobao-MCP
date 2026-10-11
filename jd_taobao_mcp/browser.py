@@ -184,10 +184,9 @@ class BrowserController:
 
         try:
             body = page.locator("body")
-            text = (
-                await body.inner_text(timeout=2_000)
-                if await body.count() else ""
-            )
+            if not await body.count():
+                raise SafetyError("Current Taobao page DOM unavailable.")
+            text = await body.inner_text(timeout=2_000)
             current_url = page.url
             self._ensure_controller_url(current_url)
         except Exception as exc:
