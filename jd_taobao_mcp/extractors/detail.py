@@ -315,17 +315,11 @@ async def extract_product_detail(
             all_taobao_parameters,
         )
 
-        if taobao_parameters:
-            product_parameters = taobao_parameters
-        else:
-            product_parameters = _merge_parameters(
-                _normalize_parameters(
-                    raw.get("product_parameters", [])
-                ),
-                _normalize_parameters(
-                    raw.get("detail_product_parameters", [])
-                ),
-            )
+        product_parameters = _merge_parameters(
+            taobao_parameters,
+            _normalize_parameters(raw.get("product_parameters", [])),
+            _normalize_parameters(raw.get("detail_product_parameters", [])),
+        )
     else:
         product_parameters = _merge_parameters(
             _parameters_from_detail_text(body_text),

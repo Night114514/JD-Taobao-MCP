@@ -161,3 +161,38 @@ class CanonicalEncodingTests(unittest.TestCase):
         result = _canonical_detail_url(original)
         self.assertEqual(result, "https://item.taobao.com/item.htm?id=123&skuId=456")
         self.assertEqual(_canonical_detail_url(result), result)
+
+
+class ParameterSourceMergeTests(unittest.IsolatedAsyncioTestCase):
+    async def extract(self, parameters, details=None):
+        return await extract_product_detail(make_page(raw={
+            "title": "Product", "body_text": TEXT, "body_text_all": TEXT,
+            "product_parameters": parameters, "detail_product_parameters": details or [],
+        }), "taobao")
+
+    async def test_structured_extra_fields_survive_text(self):
+        result = await self.extract([{"name": "颜色", "value": "蓝色"}],
+                                    [{"name": "尺寸", "value": "10 cm"}])
+        values = {p["name"]: p["value"] for p in result["product_parameters"]}
+        self.assertEqual(values["颜色"], "蓝色")
+        self.assertEqual(values["尺寸"], "10 cm")
+        self.assertEqual(values["品牌"], "Example")
+
+    async def test_same_values_deduplicated(self):
+        result = await self.extract([{"name": "品牌", "value": "Example"}])
+        self.assertEqual([p["value"] for p in result["product_parameters"] if p["name"] == "品牌"], ["Example"])
+
+    async def test_conflicting_values_keep_text_precedence(self):
+        result = await self.extract([{"name": "品牌", "value": "Other"},
+                                     {"name": "颜色", "value": "蓝色"}],
+                                    [{"name": "颜色", "value": "红色"}])
+        values = {p["name"]: p["value"] for p in result["product_parameters"]}
+        self.assertEqual(values["品牌"], "Example")
+        self.assertEqual(values["颜色"], "蓝色")
+        # PR #2 exposes evidence/conflicts; PR #1 retains its existing schema.
+        if "product_parameter_conflicts" in result:
+            conflicts = {c["name"]: c for c in result["product_parameter_conflicts"]}
+            self.assertEqual(conflicts["品牌"]["selected_value"], "Example")
+            self.assertIn({"source": "dom_parameters", "value": "Other"}, conflicts["品牌"]["alternatives"])
+            self.assertIn({"source": "dom_detail", "value": "红色"}, conflicts["颜色"]["alternatives"])
+            self.assertIn("dom_parameters", str(result["product_parameter_evidence"]))
