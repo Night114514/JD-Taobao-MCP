@@ -34,7 +34,7 @@ mcp = FastMCP(
 @mcp.tool()
 async def browser_start() -> dict[str, Any]:
     """启动一个带独立持久化资料目录的可见 Chromium 浏览器。"""
-    return await service.taobao_browser.start()
+    return await service._browser_for_platform("taobao").start()
 
 
 @mcp.tool()

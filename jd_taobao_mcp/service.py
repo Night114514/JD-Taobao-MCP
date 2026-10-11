@@ -164,8 +164,9 @@ class ShoppingBrowserService:
             page = await browser.get_page()
             _ensure_page_platform(page, platform)
             body_text = ""
-            if await page.locator("body").count():
-                body_text = await page.locator("body").inner_text(timeout=5_000)
+            with _pause_on_extraction_failure(browser):
+                if await page.locator("body").count():
+                    body_text = await page.locator("body").inner_text(timeout=5_000)
             requires_verification = page_requires_user_verification(
                 body_text, page.url
             )
@@ -551,12 +552,10 @@ def _canonical_detail_url(url: str) -> str:
     if not item_id:
         return url
 
-    canonical = f"https://item.taobao.com/item.htm?id={item_id}"
-
+    parameters = {"id": item_id}
     if sku_id:
-        canonical += f"&skuId={sku_id}"
-
-    return canonical
+        parameters["skuId"] = sku_id
+    return "https://item.taobao.com/item.htm?" + urlencode(parameters)
 
 def _validate_platform(platform: str) -> str:
     normalized = platform.strip().lower()
