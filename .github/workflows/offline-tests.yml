@@ -48,3 +48,15 @@ jobs:
       - name: Verify permanent Mock MCP stdio tests explicitly
         timeout-minutes: 3
         run: python scripts/ci_offline_tests.py --stdio-only
+      - name: Verify synthetic DOM JavaScript tests
+        timeout-minutes: 2
+        run: |
+          # Use the GitHub-hosted Windows image's preinstalled Node.js; no npm install.
+          node --version
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node -e "if (Number(process.versions.node.split('.')[0]) < 22) process.exit(1)"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node --check tests/test_body_text_transfer.cjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node tests/test_body_text_transfer.cjs
+          exit $LASTEXITCODE
