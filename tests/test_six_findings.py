@@ -54,3 +54,60 @@ class PostNavigationInspectionTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_text_reload_pauses(self):
         await self.check_failure("inner_text", fixtures.TAOBAO)
+
+
+class LoginConsistencyTests(unittest.IsolatedAsyncioTestCase):
+    setUp = fixtures.CrossPlatformGuardTests.setUp
+
+    async def check(self, url, cookies=False, transition=None, text="Product", expected=False, dom_transition=None):
+        browser = self.service.taobao_browser
+        browser._context = self.jd._context
+        browser._page = self.page
+        browser._start_unlocked = AsyncMock()
+        self.page.url = url
+        self.locator.inner_text.return_value = text
+        if dom_transition:
+            async def change_dom(*args, **kwargs):
+                self.page.url = dom_transition
+                return text
+            self.locator.inner_text.side_effect = change_dom
+        names = [{"name": "tracknick", "domain": ".taobao.com", "value": "SYNTHETIC_SECRET"}] if cookies else []
+        browser._context.cookies.return_value = names
+        if transition:
+            async def redirect():
+                self.page.url = transition
+                return names
+            browser._context.cookies.side_effect = redirect
+        result = await browser.check_login("taobao")
+        self.assertEqual(result["requires_user_verification"], expected)
+        self.assertEqual(result["likely_logged_in"], cookies and not expected)
+        self.assertNotIn("SYNTHETIC_SECRET", str(result))
+        self.assertEqual(TaobaoNavigationGuard(browser._taobao_guard.state_path).is_paused(), expected)
+        self.page.goto.assert_not_awaited()
+
+    async def test_login_without_keywords(self):
+        await self.check(LOGIN, expected=True)
+
+    async def test_login_with_stale_cookie_names(self):
+        await self.check(LOGIN, cookies=True, expected=True)
+
+    async def test_verification_url_with_stale_cookies(self):
+        await self.check(VERIFY, cookies=True, expected=True)
+
+    async def test_normal_logged_in_control(self):
+        await self.check(fixtures.TAOBAO, cookies=True)
+
+    async def test_normal_logged_out_control(self):
+        await self.check(fixtures.TAOBAO)
+
+    async def test_redirect_during_cookie_await(self):
+        await self.check(fixtures.TAOBAO, cookies=True, transition=LOGIN, expected=True)
+
+    async def test_verification_body_is_not_logged_in(self):
+        await self.check(fixtures.TAOBAO, cookies=True, text="安全验证", expected=True)
+
+    async def test_redirect_during_dom_await(self):
+        await self.check(fixtures.TAOBAO, cookies=True, dom_transition=LOGIN, expected=True)
+
+    async def test_observed_auth_not_erased_by_later_redirect(self):
+        await self.check(LOGIN, cookies=True, transition=fixtures.TAOBAO, expected=True)

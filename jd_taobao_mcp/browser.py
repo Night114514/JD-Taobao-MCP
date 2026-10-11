@@ -340,17 +340,31 @@ class BrowserController:
                 except PlaywrightTimeoutError:
                     pass
                 await self._settle(page)
+            # Keep any observed auth transition, including across later awaits.
+            requires_verification = (
+                is_taobao_auth_url(page.url)
+                or page_requires_user_verification("", page.url)
+            )
             body_text = ""
             if await page.locator("body").count():
                 body_text = await page.locator("body").inner_text(timeout=5_000)
-            if self._taobao_guard is not None and (
-                is_taobao_auth_url(page.url)
+            requires_verification = (
+                requires_verification
+                or is_taobao_auth_url(page.url)
                 or page_requires_user_verification(body_text, page.url)
-            ):
+            )
+            if self._taobao_guard is not None and requires_verification:
                 self._taobao_guard.pause()
 
             cookies = await self._context.cookies() if self._context else []
             self._ensure_controller_url(page.url)
+            requires_verification = (
+                requires_verification
+                or is_taobao_auth_url(page.url)
+                or page_requires_user_verification(body_text, page.url)
+            )
+            if self._taobao_guard is not None and requires_verification:
+                self._taobao_guard.pause()
             domain_token = "jd.com" if platform == "jd" else "taobao.com"
             relevant_cookie_names = sorted(
                 {
@@ -359,14 +373,14 @@ class BrowserController:
                     if domain_token in cookie.get("domain", "")
                 }
             )
-            likely_logged_in = self._login_heuristic(platform, body_text, relevant_cookie_names)
+            likely_logged_in = not requires_verification and self._login_heuristic(platform, body_text, relevant_cookie_names)
             return {
                 "platform": platform,
                 "likely_logged_in": likely_logged_in,
                 "current_url": page.url,
                 "relevant_cookie_count": len(relevant_cookie_names),
                 "cookie_names": relevant_cookie_names[:30],
-                "requires_user_verification": page_requires_user_verification(body_text, page.url),
+                "requires_user_verification": requires_verification,
                 "message": (
                     "检测到较强的登录迹象。"
                     if likely_logged_in
