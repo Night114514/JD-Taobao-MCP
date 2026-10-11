@@ -204,7 +204,30 @@ async def extract_product_detail(
             if (images.length >= 30) break;
           }
           const bodyText = document.body?.innerText || '';
-          const bodyTextAll = document.body?.textContent || '';
+          // Bound this field before Playwright serialization. Keep ordinary
+          // hidden DOM text, but exclude script/style/hydration containers.
+          const bodyTextLimit = 80000; // UTF-16 code units, <=480002 JSON UTF-8 bytes.
+          const bodyTextParts = [];
+          let bodyTextLength = 0;
+          let bodyTextAllTruncated = false;
+          if (document.body) {
+            const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, {
+              acceptNode: (node) => node.parentElement?.closest('script, style, noscript, template')
+                ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT
+            });
+            let node;
+            while ((node = walker.nextNode())) {
+              const text = node.nodeValue || '';
+              const remaining = bodyTextLimit - bodyTextLength;
+              bodyTextParts.push(text.slice(0, remaining));
+              bodyTextLength += Math.min(text.length, remaining);
+              if (text.length > remaining) {
+                bodyTextAllTruncated = true;
+                break;
+              }
+            }
+          }
+          const bodyTextAll = bodyTextParts.join('');
           return {
             title: firstText(selectors.title),
             price_text: firstText(selectors.price),
@@ -224,7 +247,8 @@ async def extract_product_detail(
               canonical: document.querySelector('link[rel="canonical"]')?.href || ''
             },
             body_text: bodyText,
-            body_text_all: bodyTextAll
+            body_text_all: bodyTextAll,
+            body_text_all_truncated: bodyTextAllTruncated
           };
         }
         """,
@@ -431,6 +455,7 @@ async def extract_product_detail(
         "high_dissatisfied_reviews": high_dissatisfied_reviews,
         "images": normalized_images,
         "page_text_excerpt": compact_text(raw.get("body_text"), 10_000),
+        "body_text_all_truncated": bool(raw.get("body_text_all_truncated", False)),
         "json_ld_product": _limit_json_value(json_product),
     }
 
