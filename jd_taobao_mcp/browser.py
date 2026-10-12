@@ -402,41 +402,53 @@ class BrowserController:
     async def snapshot(self, max_chars: int | None = None) -> dict[str, Any]:
         async with self._lock:
             page = await self._checked_page_unlocked()
-            max_chars = max_chars or self.settings.max_page_text_chars
-            data = await page.evaluate(
-                r"""
-                (maxChars) => {
-                  const links = [...document.querySelectorAll('a[href]')]
-                    .filter(a => {
-                      const r = a.getBoundingClientRect();
-                      return r.width > 0 && r.height > 0;
-                    })
-                    .slice(0, 120)
-                    .map(a => ({text: (a.innerText || a.title || '').trim().slice(0, 200), href: a.href}));
-                  const forms = [...document.querySelectorAll('form')].slice(0, 20).map(form => ({
-                    action: form.action,
-                    method: form.method,
-                    text: (form.innerText || '').trim().slice(0, 500)
-                  }));
-                  const bodyText = (document.body?.innerText || '').replace(/\n{3,}/g, '\n\n');
-                  return {
-                    url: location.href,
-                    title: document.title,
-                    text: bodyText.slice(0, maxChars),
-                    links,
-                    forms,
-                    meta_description: document.querySelector('meta[name="description"]')?.content || ''
-                  };
-                }
-                """,
-                max_chars,
-            )
-            data["requires_user_verification"] = page_requires_user_verification(
-                data.get("text", ""), page.url
-            )
-            self._ensure_controller_url(page.url)
-            self._ensure_controller_url(data["url"])
-            return data
+            observed_url = page.url
+            try:
+                max_chars = max_chars or self.settings.max_page_text_chars
+                data = await page.evaluate(
+                    r"""
+                    (maxChars) => {
+                      const links = [...document.querySelectorAll('a[href]')]
+                        .filter(a => {
+                          const r = a.getBoundingClientRect();
+                          return r.width > 0 && r.height > 0;
+                        })
+                        .slice(0, 120)
+                        .map(a => ({text: (a.innerText || a.title || '').trim().slice(0, 200), href: a.href}));
+                      const forms = [...document.querySelectorAll('form')].slice(0, 20).map(form => ({
+                        action: form.action,
+                        method: form.method,
+                        text: (form.innerText || '').trim().slice(0, 500)
+                      }));
+                      const bodyText = (document.body?.innerText || '').replace(/\n{3,}/g, '\n\n');
+                      return {
+                        url: location.href,
+                        title: document.title,
+                        text: bodyText.slice(0, maxChars),
+                        links,
+                        forms,
+                        meta_description: document.querySelector('meta[name="description"]')?.content || ''
+                      };
+                    }
+                    """,
+                    max_chars,
+                )
+                data["requires_user_verification"] = any(
+                    is_taobao_auth_url(url) or page_requires_user_verification(data.get("text", ""), url)
+                    for url in (observed_url, page.url, data["url"])
+                )
+                self._ensure_controller_url(page.url)
+                self._ensure_controller_url(data["url"])
+                if data["requires_user_verification"]:
+                    self.pause_taobao_automation("login_or_verification_required")
+                return data
+            except Exception as exc:
+                try:
+                    self.pause_taobao_automation("snapshot_inspection_failed")
+                except Exception as pause_error:
+                    exc.add_note(f"Persisting snapshot pause also failed: {pause_error!r}")
+                raise
+
 
     async def list_elements(self, limit: int = 80) -> dict[str, Any]:
         limit = max(1, min(limit, 200))
