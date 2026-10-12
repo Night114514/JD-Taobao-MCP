@@ -155,3 +155,81 @@ class PriceTrustTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_visible_body_price_precedes_url(self):
         await self.check("", "100", 35.0, "visible_product_text", body="Product ¥35.00")
+
+
+class JDVerificationContextTests(unittest.IsolatedAsyncioTestCase):
+    setUp = fixtures.CrossPlatformGuardTests.setUp
+
+    async def check(self, text, signals, blocked, url=fixtures.JD, platform="jd"):
+        self.page.url = url
+        self.locator.inner_text.return_value = text
+        self.page.evaluate.return_value = signals
+        browser = self.service._browser_for_platform(platform)
+        if blocked:
+            with self.assertRaises(SafetyError):
+                await self.service._assert_extraction_page(browser, self.page, platform)
+        else:
+            await self.service._assert_extraction_page(browser, self.page, platform)
+
+    async def test_product_description_and_review_mentions_allowed(self):
+        for term in ("安全验证", "验证码错误"):
+            with self.subTest(term=term):
+                await self.check("商品编号 123 商品详情 " + term,
+                    {"has_product_identity": True, "has_challenge_ui": False, "outside_product_text": "Product ¥35"}, False)
+
+    async def test_verification_with_product_words_still_blocked(self):
+        await self.check("商品详情 安全验证", {"has_product_identity": False, "has_challenge_ui": True, "outside_product_text": "安全验证"}, True)
+
+    async def test_overlay_on_real_product_still_blocked(self):
+        await self.check("商品编号 123 安全验证", {"has_product_identity": True, "has_challenge_ui": True, "outside_product_text": ""}, True)
+
+    async def test_outside_product_verification_still_blocked(self):
+        await self.check("商品编号 123 安全验证", {"has_product_identity": True, "has_challenge_ui": False, "outside_product_text": "安全验证"}, True)
+
+    async def test_login_url_never_exempted(self):
+        await self.check("商品编号 123", {}, True, url="https://passport.jd.com/new/login.aspx")
+
+    async def test_taobao_never_gets_jd_exemption(self):
+        await self.check("商品编号 123 安全验证", {"has_product_identity": True, "has_challenge_ui": False, "outside_product_text": ""}, True, url=fixtures.TAOBAO, platform="taobao")
+
+    async def test_detail_caller_preserves_success_contract(self):
+        self.page.url = fixtures.JD
+        self.locator.inner_text.return_value = "商品编号 123 商品详情 安全验证"
+        self.page.evaluate.return_value = {"has_product_identity": True, "has_challenge_ui": False, "outside_product_text": "Product"}
+        self.jd.navigate = AsyncMock(return_value={"success": True})
+        self.jd.get_page = AsyncMock(return_value=self.page)
+        self.service._prepare_product_detail_page = AsyncMock()
+        with patch("jd_taobao_mcp.service.extract_product_detail", new_callable=AsyncMock, return_value={"product_url": fixtures.JD, "product_parameters": [], "price": 35.0}):
+            result = await self.service.get_product_detail(fixtures.JD)
+        self.assertTrue(result["success"])
+        self.assertEqual(result["price"], 35.0)
+        self.assertIn("product_parameters_status", result)
+
+    async def test_current_page_caller_uses_live_context(self):
+        self.service.browser = self.jd
+        self.page.url = fixtures.JD
+        self.locator.inner_text.return_value = "商品详情 安全验证"
+        self.page.evaluate.return_value = {"has_product_identity": True, "has_challenge_ui": False, "outside_product_text": "Product"}
+        self.jd.snapshot = AsyncMock(return_value={"url": fixtures.JD, "text": "商品详情 安全验证", "requires_user_verification": True})
+        self.jd.get_page = AsyncMock(return_value=self.page)
+        with patch("jd_taobao_mcp.service.extract_product_detail", new_callable=AsyncMock, return_value={"product_url": fixtures.JD, "product_parameters": []}):
+            result = await self.service.extract_current_page()
+        self.assertTrue(result["success"])
+
+    async def test_context_inspection_exception_still_blocks(self):
+        self.page.url = fixtures.JD
+        self.locator.inner_text.return_value = "商品详情 安全验证"
+        self.page.evaluate.side_effect = RuntimeError("synthetic context lost")
+        with self.assertRaises(SafetyError) as caught:
+            await self.service._assert_extraction_page(self.jd, self.page, "jd")
+        self.assertIsInstance(caught.exception.__cause__, RuntimeError)
+
+    async def test_context_redirect_is_not_exempted(self):
+        self.page.url = fixtures.JD
+        self.locator.inner_text.return_value = "商品详情 安全验证"
+        async def redirect(*args):
+            self.page.url = "https://passport.jd.com/new/login.aspx"
+            return {"has_product_identity": True, "has_challenge_ui": False, "outside_product_text": ""}
+        self.page.evaluate.side_effect = redirect
+        with self.assertRaises(SafetyError):
+            await self.service._assert_extraction_page(self.jd, self.page, "jd")

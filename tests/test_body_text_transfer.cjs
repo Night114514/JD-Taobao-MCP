@@ -92,6 +92,50 @@ cases.push(
     assert.equal(r.body_text_all_truncated,false);
   }],
 );
+// Exercise the production JD context probe without a browser or website.
+const serviceSource = fs.readFileSync(path.join(__dirname, '../jd_taobao_mcp/service.py'), 'utf8');
+const helperStart = serviceSource.indexOf('async def _requires_extraction_verification');
+const jsStart = serviceSource.indexOf('r"""', helperStart);
+const jsEnd = serviceSource.indexOf('"""', jsStart + 4);
+function jdContext({title=true, price=true, challenge=false, outside='Product', copy='安全验证', body=true}={}) {
+  const visibleNode = {getClientRects:()=>[{}]};
+  const removed = new Set();
+  const clone = {
+    querySelectorAll(selector) {
+      for (const needed of ['#detail','#comment','script','style']) assert.ok(selector.includes(needed));
+      return [{remove:()=>removed.add('copy')}];
+    },
+    get innerText() {return outside+(removed.has('copy')?'':copy);}
+  };
+  const document = {
+    querySelector: selector => (selector.includes('#name') ? title : price) ? visibleNode : null,
+    querySelectorAll: () => challenge ? [visibleNode] : [],
+    body: body ? {cloneNode:()=>clone} : null,
+  };
+  const fn=vm.runInNewContext('('+serviceSource.slice(jsStart+4,jsEnd)+')',{document},{timeout:1000});
+  return fn();
+}
+cases.push(
+  ['JD product review text excluded from page-level context',()=>{
+    const r=jdContext(); assert.equal(r.has_product_identity,true);
+    assert.equal(r.has_challenge_ui,false); assert.equal(r.outside_product_text,'Product');
+  }],
+  ['JD product words alone do not establish product identity',()=>{
+    assert.equal(jdContext({title:false,price:false,outside:'商品详情 安全验证'}).has_product_identity,false);
+  }],
+  ['JD visible challenge remains detected over product',()=>{
+    assert.equal(jdContext({challenge:true}).has_challenge_ui,true);
+  }],
+  ['JD verification outside product copy remains available',()=>{
+    assert.equal(jdContext({outside:'安全验证'}).outside_product_text,'安全验证');
+  }],
+  ['JD context transport is bounded',()=>{
+    assert.equal(jdContext({outside:'x'.repeat(100000)}).outside_product_text.length,5000);
+  }],
+  ['JD missing body cannot fabricate context',()=>{
+    assert.equal(jdContext({body:false,title:false,price:false}).has_product_identity,false);
+  }],
+);
 let failures=0;
 for(const [name,test] of cases) {
   try {test(); console.log('PASS '+name);}

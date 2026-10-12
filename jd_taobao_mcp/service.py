@@ -75,8 +75,8 @@ class ShoppingBrowserService:
             with _pause_on_extraction_failure(browser):
                 if await page.locator("body").count():
                     body_text = await page.locator("body").inner_text(timeout=5_000)
-            requires_verification = page_requires_user_verification(
-                body_text, page.url
+            requires_verification = await _requires_extraction_verification(
+                page, body_text, platform
             )
             if platform == "taobao" and (
                 requires_verification
@@ -168,8 +168,8 @@ class ShoppingBrowserService:
             with _pause_on_extraction_failure(browser):
                 if await page.locator("body").count():
                     body_text = await page.locator("body").inner_text(timeout=5_000)
-            requires_verification = page_requires_user_verification(
-                body_text, page.url
+            requires_verification = await _requires_extraction_verification(
+                page, body_text, platform
             )
             if platform == "taobao" and (
                 requires_verification
@@ -250,7 +250,7 @@ class ShoppingBrowserService:
                     raise SafetyError("Page DOM unavailable after extraction operation.")
                 text = await body.inner_text(timeout=5_000)
                 _ensure_page_platform(page, platform)
-                blocked = is_taobao_auth_url(page.url) or page_requires_user_verification(text, page.url)
+                blocked = await _requires_extraction_verification(page, text, platform)
         except Exception as exc:
             browser.pause_taobao_automation("extraction_inspection_failed")
             raise SafetyError("Cannot inspect extraction page; results discarded.") from exc
@@ -267,8 +267,9 @@ class ShoppingBrowserService:
             page = await browser.get_page()
             _ensure_page_platform(page, platform)
             blocked = (
-                snapshot.get("requires_user_verification", False)
-                or page_requires_user_verification(snapshot.get("text", ""), snapshot["url"])
+                (platform == "taobao" and snapshot.get("requires_user_verification", False))
+                or (platform == "taobao" and page_requires_user_verification(snapshot.get("text", ""), snapshot["url"]))
+                or page_requires_user_verification("", snapshot["url"])
                 or is_taobao_auth_url(snapshot["url"])
                 or is_taobao_auth_url(page.url)
             )
@@ -278,7 +279,7 @@ class ShoppingBrowserService:
                     if not await body.count():
                         raise SafetyError("Current page DOM unavailable.")
                     text = await body.inner_text(timeout=5_000)
-                    blocked = page_requires_user_verification(text, page.url) or is_taobao_auth_url(page.url)
+                    blocked = await _requires_extraction_verification(page, text, platform)
                 except Exception as exc:
                     browser.pause_taobao_automation("current_page_inspection_failed")
                     raise SafetyError("Cannot inspect current page; extraction stopped.") from exc
@@ -528,6 +529,48 @@ class ShoppingBrowserService:
                     pass
             return {**nav, "url": page.url}
 
+
+
+async def _requires_extraction_verification(page: Any, text: str, platform: str) -> bool:
+    """Keep Taobao strict; distinguish JD product copy from page-level challenges."""
+    url = page.url
+    if is_taobao_auth_url(url) or page_requires_user_verification("", url):
+        return True
+    if not page_requires_user_verification(text, url):
+        return False
+    if platform != "jd":
+        return True
+    signals = await page.evaluate(
+        r"""
+        () => {
+          // JD verification context: product copy is not a page-level challenge.
+          const visible = (el) => !!el && el.getClientRects().length > 0;
+          const hasProduct = visible(document.querySelector('#name h1, .sku-name'))
+            && visible(document.querySelector('.summary-price .p-price, .summary-price-wrap .p-price'));
+          const challenge = [...document.querySelectorAll(
+            'input[autocomplete="one-time-code"], input[name*="captcha"], iframe[src*="captcha"], #JDJRV-wrap, .JDJRV-wrap, .JDJRV-bigimg'
+          )].some(visible);
+          const outside = document.body?.cloneNode(true);
+          outside?.querySelectorAll(
+            '#name, .sku-name, #detail, #comment, #comments-list, .comment-item, .J-detail-content, script, style, noscript, template'
+          ).forEach(el => el.remove());
+          return {
+            has_product_identity: hasProduct,
+            has_challenge_ui: challenge,
+            outside_product_text: (outside?.innerText || outside?.textContent || '').slice(0, 5000)
+          };
+        }
+        """
+    )
+    _ensure_page_platform(page, platform)
+    return (
+        page_requires_user_verification("", page.url)
+        or not isinstance(signals, dict)
+        or signals.get("has_product_identity") is not True
+        or signals.get("has_challenge_ui") is not False
+        or not isinstance(signals.get("outside_product_text"), str)
+        or page_requires_user_verification(signals.get("outside_product_text", ""), page.url)
+    )
 
 def _canonical_detail_url(url: str) -> str:
     """Normalize supported Taobao detail URLs to the full desktop detail page."""
