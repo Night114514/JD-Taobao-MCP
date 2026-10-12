@@ -69,3 +69,60 @@ class SnapshotPauseTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_jd_control(self):
         await self.check(fixtures.JD, jd=True)
+
+
+class SearchInspectionTests(unittest.IsolatedAsyncioTestCase):
+    setUp = fixtures.CrossPlatformGuardTests.setUp
+
+    async def check_failure(self, operation, target):
+        browser = self.service.taobao_browser
+        browser.get_page = AsyncMock(return_value=self.page)
+        self.page.url = fixtures.TAOBAO
+        self.service._open_search_page = AsyncMock(return_value={"success": True})
+        error = RuntimeError("synthetic search reload")
+
+        async def fail(*args, **kwargs):
+            self.page.url = target
+            raise error
+
+        getattr(self.locator, operation).side_effect = fail
+        guard = browser._taobao_guard
+        with patch.object(guard, "reserve_navigation") as reserve, patch(
+            "jd_taobao_mcp.service.extract_taobao_search", new_callable=AsyncMock
+        ) as extract:
+            with self.assertRaises(RuntimeError) as caught:
+                await self.service.search_products("taobao", "fixture")
+            self.assertIs(caught.exception, error)
+            self.assertTrue(TaobaoNavigationGuard(guard.state_path).is_paused())
+            extract.assert_not_awaited()
+            self.service._open_search_page.assert_awaited_once()
+            reserve.assert_not_called()
+            self.page.goto.assert_not_awaited()
+
+    async def test_count_reload_pauses(self):
+        await self.check_failure("count", fixtures.TAOBAO)
+
+    async def test_count_login_redirect_pauses(self):
+        await self.check_failure("count", LOGIN)
+
+    async def test_text_reload_pauses(self):
+        await self.check_failure("inner_text", fixtures.TAOBAO)
+
+    async def test_text_verification_redirect_pauses(self):
+        await self.check_failure("inner_text", "https://item.taobao.com/captcha")
+
+    async def check_normal(self, platform):
+        browser = self.service._browser_for_platform(platform)
+        self.page.url = fixtures.TAOBAO if platform == "taobao" else fixtures.JD
+        browser.get_page = AsyncMock(return_value=self.page)
+        self.service._open_search_page = AsyncMock(return_value={"success": True})
+        with patch(f"jd_taobao_mcp.service.extract_{platform}_search", new_callable=AsyncMock, return_value=[]):
+            result = await self.service.search_products(platform, "fixture", include_details=False)
+        self.assertTrue(result["success"])
+        self.assertFalse(self.service.taobao_browser._taobao_guard.is_paused())
+
+    async def test_normal_taobao(self):
+        await self.check_normal("taobao")
+
+    async def test_normal_jd(self):
+        await self.check_normal("jd")
