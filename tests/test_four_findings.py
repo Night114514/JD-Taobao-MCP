@@ -126,3 +126,32 @@ class SearchInspectionTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_normal_jd(self):
         await self.check_normal("jd")
+
+
+class PriceTrustTests(unittest.IsolatedAsyncioTestCase):
+    async def check(self, dom, metadata, expected, source, body="Product"):
+        url = fixtures.TAOBAO + "&skuId=654321" + ("&upStreamPrice=" + metadata if metadata is not None else "")
+        result = await extract_product_detail(make_page(raw={"title": "Product", "price_text": dom, "body_text": body}), "taobao", original_url=url)
+        self.assertEqual(result["price"], expected)
+        self.assertEqual(result["price_source"], source)
+        self.assertEqual(result["selected_sku_id"], "654321")
+
+    async def test_unverified_url_cannot_override_dom_sku_price(self):
+        await self.check("¥35.00", "100", 35.0, "dom")
+
+    async def test_missing_url_price(self):
+        await self.check("¥35.00", None, 35.0, "dom")
+
+    async def test_missing_dom_uses_url_fallback(self):
+        await self.check("", "8500", 85.0, "url_upStreamPrice")
+
+    async def test_invalid_url_keeps_dom(self):
+        for value in ("NaN", "Infinity", "-1", "0", "bad"):
+            with self.subTest(value=value):
+                await self.check("¥35.00", value, 35.0, "dom")
+
+    async def test_matching_price_keeps_page_provenance(self):
+        await self.check("¥35.00", "3500", 35.0, "dom")
+
+    async def test_visible_body_price_precedes_url(self):
+        await self.check("", "100", 35.0, "visible_product_text", body="Product ¥35.00")

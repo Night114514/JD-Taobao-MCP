@@ -407,16 +407,17 @@ async def extract_product_detail(
             shop = _taobao_shop_from_text(body_text)
 
         url_price, selected_sku_id = _taobao_price_from_url(metadata_url)
-        if url_price is not None:
-            price = url_price
-            price_text = f"\u00a5{url_price:.2f}"
-            price_source = "url_upStreamPrice"
-        else:
+        # Caller metadata cannot establish that a different price belongs to the SKU.
+        if price is None or price <= 0:
             body_price = _taobao_price_near_title(body_text, title)
-            if body_price is not None and (price is None or price == 0):
+            if body_price is not None:
                 price = body_price
                 price_text = f"\u00a5{body_price:.2f}"
                 price_source = "visible_product_text"
+            elif url_price is not None:
+                price = url_price
+                price_text = f"\u00a5{url_price:.2f}"
+                price_source = "url_upStreamPrice"
 
     return {
         "platform": platform,

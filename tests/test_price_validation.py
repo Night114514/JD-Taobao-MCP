@@ -21,8 +21,8 @@ class PriceValidationTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_finite_positive_metadata_keeps_existing_contract(self):
         result = await extract_product_detail(make_page(), "taobao", original_url=URL + "&upStreamPrice=8500")
-        self.assertEqual(result["price"], 85.0)
-        self.assertEqual(result["price_source"], "url_upStreamPrice")
+        self.assertEqual(result["price"], 35.0)
+        self.assertEqual(result["price_source"], "dom")
         json.dumps(result, allow_nan=False)
 
     def test_parser_rejects_nonfinite_values_and_keeps_sku(self):

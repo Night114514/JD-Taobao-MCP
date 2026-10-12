@@ -71,9 +71,9 @@ class MetadataTests(unittest.IsolatedAsyncioTestCase):
     async def test_original_metadata_survives_redirect_losing_all_query(self):
         page = make_page("https://item.taobao.com/item.htm")
         result = await extract_product_detail(page, "taobao", original_url=ORIGINAL)
-        self.assertEqual(result["price"], 85.0)
-        self.assertEqual(result["price_text"], "¥85.00")
-        self.assertEqual(result["price_source"], "url_upStreamPrice")
+        self.assertEqual(result["price"], 35.0)
+        self.assertEqual(result["price_text"], "¥35.00")
+        self.assertEqual(result["price_source"], "dom")
         self.assertEqual(result["selected_sku_id"], "5455243929341")
         self.assertEqual(result["title"], TITLE)
         self.assertEqual(result["shop"], "网特讯 WTXUP")
@@ -83,7 +83,7 @@ class MetadataTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_legacy_current_page_extraction(self):
         result = await extract_product_detail(make_page(ORIGINAL), "taobao")
-        self.assertEqual(result["price"], 85.0)
+        self.assertEqual(result["price"], 35.0)
         self.assertEqual(result["selected_sku_id"], "5455243929341")
 
     async def test_missing_or_invalid_original_price_uses_dom(self):
@@ -129,7 +129,7 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
         self.browser.navigate.assert_awaited_once_with(CANONICAL)
         self.assertEqual(result["original_url"], ORIGINAL)
         self.assertEqual(result["product_url"], self.page.url)
-        self.assertEqual(result["price"], 85.0)
+        self.assertEqual(result["price"], 35.0)
         self.assertEqual(result["selected_sku_id"], "5455243929341")
         self.assertEqual(result["title"], TITLE)
         self.assertEqual(result["shop"], "网特讯 WTXUP")
