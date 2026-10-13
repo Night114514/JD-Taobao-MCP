@@ -1067,47 +1067,35 @@ def _review_sentiment(content: str) -> str:
 def _fallback_reviews_from_text(
     text: str | None, *, positive: bool, limit: int = 5
 ) -> list[dict[str, Any]]:
-    text = compact_text(text, 40_000)
+    text = (text or "")[:40_000]
     if not text:
         return []
-
-    # Prefer the actual Taobao review heading "user reviews + count".
-    actual_heading = "\u7528\u6237\u8bc4\u4ef7\u00b7"
-    end_heading = "\u67e5\u770b\u5168\u90e8\u8bc4\u4ef7"
-
-    start = text.find(actual_heading)
-
-    if start >= 0:
-        end = text.find(end_heading, start)
-
-        if end < 0:
-            end = min(len(text), start + 8000)
-
-        segment = text[start:end]
-    else:
-        # raw review_text has no heading; parse the whole value.
-        segment = text
-
-    review_re = re.compile(
-        r"(?P<user>[A-Za-z0-9_*\u4e00-\u9fff]{2,30})\s+"
-        r"(?P<date>20\d{2}-\d{2}-\d{2})\s+"
-        r"(?P<content>.*?)"
-        r"(?=(?:[A-Za-z0-9_*\u4e00-\u9fff]{2,30}\s+"
-        r"20\d{2}-\d{2}-\d{2}\s+)|$)"
-    )
-
+    heading = re.search(r"用户评价(?:·\d*)?|买家评价", text)
+    segment = text[heading.end():] if heading else text
+    segment = re.split(r"查看全部评价|全部评价|问大家|商品详情", segment, maxsplit=1)[0]
+    user = r"[A-Za-z0-9_*\u4e00-\u9fff]{2,30}"
+    date = r"20\d{2}(?:-\d{2}-\d{2}|年\d{1,2}月\d{1,2}日)"
+    # Dates establish a strong boundary. Without dates require review context
+    # plus a masked reviewer or a reviewer occupying its own complete line.
+    pattern = rf"(?<![\w*])(?P<dated_user>{user})[ \t\r\n]+(?P<date>{date})[ \t\r\n]+"
+    masked = r"[A-Za-z0-9_\u4e00-\u9fff]{1,12}\*{1,4}[A-Za-z0-9_\u4e00-\u9fff]{0,12}"
+    pattern += rf"|(?<![\w*])(?P<masked_user>{masked})[ \t\r\n]+"
+    if heading:
+        pattern += rf"|^(?P<line_user>[A-Za-z][A-Za-z0-9_]{{1,29}})[ \t]*\r?$\n"
+    matches = list(re.finditer(pattern, segment, re.M))
 
     output: list[dict[str, Any]] = []
     seen: set[tuple[str, str]] = set()
 
-    for match in review_re.finditer(segment):
-        user = compact_text(match.group("user"), 80)
-        date = compact_text(match.group("date"), 80)
-        content = compact_text(match.group("content"), 800)
-
+    for index, match in enumerate(matches):
+        if not heading and not match.group("date"):
+            continue
+        user = compact_text(match.group("dated_user") or match.groupdict().get("masked_user") or match.groupdict().get("line_user"), 80)
+        date = compact_text(match.group("date") or "", 80)
+        content_end = matches[index + 1].start() if index + 1 < len(matches) else len(segment)
+        content = compact_text(segment[match.end():content_end], 800)
         if len(content) < 3:
             continue
-
         sentiment = _review_sentiment(content)
         if sentiment != ("positive" if positive else "negative"):
             continue

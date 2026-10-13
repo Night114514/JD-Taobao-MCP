@@ -241,3 +241,47 @@ class ReviewNegationTests(unittest.TestCase):
 
     def test_regret_with_positive_copy_remains_negative(self):
         self.check('很后悔，但是外观很好', 'negative')
+
+
+class ReviewBoundaryTests(unittest.TestCase):
+    def parse(self, text):
+        return _fallback_reviews_from_text(text, positive=True)
+
+    def test_iso_date(self):
+        result = self.parse('t***3 2026-09-01 很好用非常满意')
+        self.assertEqual(result[0]['time'], '2026-09-01')
+
+    def test_chinese_date(self):
+        result = self.parse('t***3 2026年9月1日 很好用非常满意')
+        self.assertEqual(result[0]['time'], '2026年9月1日')
+
+    def test_undated_masked_heading(self):
+        result = self.parse('买家评价 t***3 很好用非常满意，使用起来十分方便 全部评价')
+        self.assertEqual([(r['user'], r['time']) for r in result], [('t***3', '')])
+
+    def test_undated_explicit_line_boundaries(self):
+        result = self.parse('买家评价\nAlice\n很好用非常满意\nBob\n非常方便很满意\n全部评价')
+        self.assertEqual([r['user'] for r in result], ['Alice', 'Bob'])
+        self.assertTrue(all(r['time'] == '' for r in result))
+
+    def test_mixed_adjacent_records_do_not_merge(self):
+        result = self.parse('买家评价 t***3 2026-09-01 很好用非常满意 a**8 非常方便很满意 b***9 2026年9月1日 很好用非常满意 全部评价')
+        self.assertEqual([r['user'] for r in result], ['t***3', 'a**8', 'b***9'])
+        self.assertEqual([r['time'] for r in result], ['2026-09-01', '', '2026年9月1日'])
+        self.assertTrue(all('***' not in r['content'] and '全部评价' not in r['content'] for r in result))
+
+    def test_description_without_review_context_rejected(self):
+        self.assertEqual(self.parse('商品介绍 t***3 很好用非常满意'), [])
+
+    def test_ambiguous_heading_prose_rejected(self):
+        self.assertEqual(self.parse('买家评价 本商品 很好用 非常方便 全部评价'), [])
+
+    def test_dated_followed_by_undated_never_absorbs_reviewer(self):
+        result = self.parse('用户评价·2 t***3 2026-09-01 很好用非常满意 a**8 很方便很满意 查看全部评价')
+        self.assertEqual(len(result), 2)
+        self.assertNotIn('a**8', result[0]['content'])
+
+    def test_headingless_undated_tail_is_not_merged_or_invented(self):
+        result = self.parse('t***3 2026-09-01 很好用非常满意 a**8 今天收到包裹')
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]['content'], '很好用非常满意')
