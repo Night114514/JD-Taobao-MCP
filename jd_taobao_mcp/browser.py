@@ -450,56 +450,91 @@ class BrowserController:
                 raise
 
 
+    async def _inspect_taobao_elements_page(self, page: Page) -> None:
+        """Read-only inspection; the caller persists one pause on any failure."""
+        if self._taobao_guard is None:
+            return
+        url = page.url
+        if not url.startswith(("http://", "https://")):
+            return
+        if is_taobao_auth_url(url) or page_requires_user_verification("", url):
+            raise SafetyError("Taobao verification page; elements discarded.")
+        body = page.locator("body")
+        if not await body.count():
+            raise SafetyError("Taobao DOM unavailable; elements discarded.")
+        text = await body.inner_text(timeout=2_000)
+        self._ensure_controller_url(page.url)
+        if is_taobao_auth_url(page.url) or page_requires_user_verification(text, page.url):
+            raise SafetyError("Taobao verification page; elements discarded.")
+
     async def list_elements(self, limit: int = 80) -> dict[str, Any]:
         limit = max(1, min(limit, 200))
         async with self._lock:
             page = await self._checked_page_unlocked()
-            elements = await page.evaluate(
-                r"""
-                (limit) => {
-                  for (const el of document.querySelectorAll('[data-mcp-ref]')) el.removeAttribute('data-mcp-ref');
-                  const candidates = [...document.querySelectorAll(
-                    'a[href],button,input,textarea,select,[role="button"],[onclick],[tabindex]:not([tabindex="-1"])'
-                  )];
-                  const out = [];
-                  let index = 1;
-                  for (const el of candidates) {
-                    const style = getComputedStyle(el);
-                    const r = el.getBoundingClientRect();
-                    if (style.visibility === 'hidden' || style.display === 'none' || r.width < 2 || r.height < 2) continue;
-                    const ref = `e${index++}`;
-                    el.setAttribute('data-mcp-ref', ref);
-                    out.push({
-                      ref,
-                      tag: el.tagName.toLowerCase(),
-                      text: (el.innerText || el.value || '').trim().replace(/\s+/g, ' ').slice(0, 240),
-                      role: el.getAttribute('role') || '',
-                      aria_label: el.getAttribute('aria-label') || '',
-                      title: el.getAttribute('title') || '',
-                      placeholder: el.getAttribute('placeholder') || '',
-                      type: el.getAttribute('type') || '',
-                      name: el.getAttribute('name') || '',
-                      href: el.href || '',
-                      disabled: Boolean(el.disabled || el.getAttribute('aria-disabled') === 'true'),
-                      bbox: {x: Math.round(r.x), y: Math.round(r.y), width: Math.round(r.width), height: Math.round(r.height)}
-                    });
-                    if (out.length >= limit) break;
-                  }
-                  return out;
+            try:
+                await self._inspect_taobao_elements_page(page)
+                elements = await page.evaluate(
+                    r"""
+                    (limit) => {
+                      for (const el of document.querySelectorAll('[data-mcp-ref]')) el.removeAttribute('data-mcp-ref');
+                      const candidates = [...document.querySelectorAll(
+                        'a[href],button,input,textarea,select,[role="button"],[onclick],[tabindex]:not([tabindex="-1"])'
+                      )];
+                      const out = [];
+                      let index = 1;
+                      for (const el of candidates) {
+                        const style = getComputedStyle(el);
+                        const r = el.getBoundingClientRect();
+                        if (style.visibility === 'hidden' || style.display === 'none' || r.width < 2 || r.height < 2) continue;
+                        const ref = `e${index++}`;
+                        el.setAttribute('data-mcp-ref', ref);
+                        out.push({
+                          ref,
+                          tag: el.tagName.toLowerCase(),
+                          text: (el.innerText || el.value || '').trim().replace(/\s+/g, ' ').slice(0, 240),
+                          role: el.getAttribute('role') || '',
+                          aria_label: el.getAttribute('aria-label') || '',
+                          title: el.getAttribute('title') || '',
+                          placeholder: el.getAttribute('placeholder') || '',
+                          type: el.getAttribute('type') || '',
+                          name: el.getAttribute('name') || '',
+                          href: el.href || '',
+                          disabled: Boolean(el.disabled || el.getAttribute('aria-disabled') === 'true'),
+                          bbox: {x: Math.round(r.x), y: Math.round(r.y), width: Math.round(r.width), height: Math.round(r.height)}
+                        });
+                        if (out.length >= limit) break;
+                      }
+                      return out;
+                    }
+                    """,
+                    limit,
+                )
+                if self._taobao_guard is not None:
+                    signal_text = " ".join(
+                        str(element.get(key, ""))
+                        for element in elements
+                        for key in ("text", "aria_label", "title", "placeholder", "name")
+                    )
+                    if page_requires_user_verification(signal_text, page.url):
+                        raise SafetyError("Taobao verification elements; results discarded.")
+                self._ensure_controller_url(page.url)
+                await self._inspect_taobao_elements_page(page)
+                title = await page.title()
+                self._ensure_controller_url(page.url)
+                await self._inspect_taobao_elements_page(page)
+                return {
+                    "url": page.url,
+                    "title": title,
+                    "count": len(elements),
+                    "elements": elements,
+                    "note": "ref 只对当前页面状态有效；页面刷新或点击后请重新调用 list_page_elements。",
                 }
-                """,
-                limit,
-            )
-            self._ensure_controller_url(page.url)
-            title = await page.title()
-            self._ensure_controller_url(page.url)
-            return {
-                "url": page.url,
-                "title": title,
-                "count": len(elements),
-                "elements": elements,
-                "note": "ref 只对当前页面状态有效；页面刷新或点击后请重新调用 list_page_elements。",
-            }
+            except Exception as exc:
+                try:
+                    self.pause_taobao_automation("element_inspection_failed")
+                except Exception as pause_error:
+                    exc.add_note(f"Cannot persist Taobao pause: {pause_error!r}")
+                raise
 
     async def click(self, ref: str) -> dict[str, Any]:
         self._deny_taobao_interaction("click")
