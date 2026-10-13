@@ -156,6 +156,17 @@ cases.push(
   ['JD captcha remains visible over search cards',()=>assert.equal(searchContext({challenge:true}).has_challenge_ui,true)],
   ['JD detail does not acquire search exemption',()=>assert.equal(searchContext({context:'detail'}).has_search_identity,false)],
 );
+// Execute the production structured-review classifier, not a copied implementation.
+const sentimentConfig=JSON.parse(source.match(/_REVIEW_SENTIMENT = (\{[\s\S]*?\n\})/)[1]);
+const classifierStart=source.indexOf('          const sentimentConfig =');
+const classifierEnd=source.indexOf('          const reviewNodes =',classifierStart);
+const classify=vm.runInNewContext('(()=>{'+source.slice(classifierStart,classifierEnd)+'return classifyReview;})()',{selectors:{review_sentiment:sentimentConfig}}, {timeout:1000});
+for(const [text,expected] of [
+  ['沒有異味，很滿意','positive'],['没有异味，很满意','positive'],
+  ['後悔沒有早點買','positive'],['后悔没有早点买','positive'],
+  ['不滿意這個商品','negative'],['沒有不滿意',''],['品質很差','negative'],['品質不差',''],
+  ['没有异味，很满意外观，但是品质很差','negative'],['今天收到包裹',''],['没有异味，很满意外观，但是确实难用','negative'],['很后悔，但是外观很好','negative']
+]) cases.push(['structured review polarity: '+text,()=>assert.equal(classify(text),expected)]);
 let failures=0;
 for(const [name,test] of cases) {
   try {test(); console.log('PASS '+name);}

@@ -200,3 +200,44 @@ class SearchContextTests(unittest.IsolatedAsyncioTestCase):
             await self.service._assert_extraction_page(self.service.taobao_browser, self.page, 'taobao')
         guard = self.service.taobao_browser._taobao_guard
         self.assertTrue(TaobaoNavigationGuard(guard.state_path).is_paused())
+
+
+class ReviewNegationTests(unittest.TestCase):
+    def check(self, content, sentiment):
+        text = 't***3 2026-09-01 ' + content
+        good = _fallback_reviews_from_text(text, positive=True)
+        bad = _fallback_reviews_from_text(text, positive=False)
+        self.assertEqual(bool(good), sentiment == 'positive')
+        self.assertEqual(bool(bad), sentiment == 'negative')
+
+    def test_no_odor_satisfied(self):
+        for text in ('沒有異味，很滿意', '没有异味，很满意'):
+            with self.subTest(text=text): self.check(text, 'positive')
+
+    def test_regret_not_buying_earlier(self):
+        for text in ('後悔沒有早點買', '后悔没有早点买'):
+            with self.subTest(text=text): self.check(text, 'positive')
+
+    def test_dissatisfied(self):
+        self.check('不滿意', 'negative')
+
+    def test_double_negative_is_not_positive_evidence(self):
+        self.check('沒有不滿意', 'unknown')
+
+    def test_bad_quality(self):
+        self.check('品質很差', 'negative')
+
+    def test_not_bad_is_unclassified(self):
+        self.check('品質不差', 'unknown')
+
+    def test_mixed_real_negative_survives_negated_term(self):
+        self.check('没有异味，很满意外观，但是品质很差', 'negative')
+
+    def test_neutral_not_padded(self):
+        self.check('今天收到包裹', 'unknown')
+
+    def test_structured_negative_vocabulary_not_lost_in_fallback(self):
+        self.check('没有异味，很满意外观，但是确实难用', 'negative')
+
+    def test_regret_with_positive_copy_remains_negative(self):
+        self.check('很后悔，但是外观很好', 'negative')
