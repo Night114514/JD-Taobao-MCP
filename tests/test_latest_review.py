@@ -121,3 +121,82 @@ class ElementPauseTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_normal_jd(self):
         await self.check(url=fixtures.JD, blocked=False, jd=True)
+
+
+class SearchContextTests(unittest.IsolatedAsyncioTestCase):
+    setUp = fixtures.CrossPlatformGuardTests.setUp
+
+    async def check(self, *, text='安全验证商品', challenge=False, outside='Search',
+                    cards=True, url='https://search.jd.com/Search?keyword=fixture', platform='jd', blocked=False):
+        self.page.url = url
+        self.locator.inner_text.return_value = text
+        self.page.evaluate.return_value = {'has_product_identity': False, 'has_search_identity': cards,
+                                         'has_challenge_ui': challenge, 'outside_product_text': outside}
+        browser = self.service._browser_for_platform(platform)
+        browser.get_page = AsyncMock(return_value=self.page)
+        self.service._open_search_page = AsyncMock(return_value={'success': True})
+        with patch(f'jd_taobao_mcp.service.extract_{platform}_search', new_callable=AsyncMock,
+                   return_value=[{'title': 'Fixture', 'product_url': fixtures.JD}]) as extract:
+            if blocked and platform == 'jd':
+                with self.assertRaises(SafetyError):
+                    await self.service.search_products(platform, 'fixture', include_details=False)
+            else:
+                result = await self.service.search_products(platform, 'fixture', include_details=False)
+                self.assertEqual(result['success'], not blocked)
+                if not blocked:
+                    self.assertEqual(len(result['items']), 1)
+                else:
+                    extract.assert_not_awaited()
+        self.service._open_search_page.assert_awaited_once()
+        self.page.goto.assert_not_awaited()
+
+    async def test_search_title_mentions_verification(self):
+        await self.check()
+
+    async def test_search_snippet_mentions_error(self):
+        await self.check(text='评论摘要 验证码错误')
+
+    async def test_search_captcha_over_results(self):
+        await self.check(challenge=True, blocked=True)
+
+    async def test_search_login(self):
+        await self.check(url='https://passport.jd.com/new/login.aspx', blocked=True)
+
+    async def test_no_cards_with_verification_words(self):
+        await self.check(cards=False, blocked=True)
+
+    async def test_taobao_search_not_exempt(self):
+        await self.check(platform='taobao', url=fixtures.TAOBAO, blocked=True)
+
+    async def test_detail_does_not_accept_search_identity(self):
+        self.page.url = fixtures.JD
+        self.locator.inner_text.return_value = '安全验证'
+        self.page.evaluate.return_value = {'has_product_identity': False, 'has_search_identity': True,
+                                         'has_challenge_ui': False, 'outside_product_text': ''}
+        with self.assertRaises(SafetyError):
+            await self.service._assert_extraction_page(self.jd, self.page, 'jd')
+
+    async def test_empty_search_without_risk_is_empty_success(self):
+        self.page.url = 'https://search.jd.com/Search?keyword=fixture'
+        self.locator.inner_text.return_value = ''
+        self.jd.get_page = AsyncMock(return_value=self.page)
+        self.service._open_search_page = AsyncMock(return_value={'success': True})
+        with patch('jd_taobao_mcp.service.extract_jd_search', new_callable=AsyncMock, return_value=[]):
+            result = await self.service.search_products('jd', 'fixture', include_details=False)
+        self.assertTrue(result['success'])
+        self.assertEqual(result['items'], [])
+
+    async def test_detail_product_evidence_still_allowed(self):
+        self.page.url = fixtures.JD
+        self.locator.inner_text.return_value = '商品详情 安全验证'
+        self.page.evaluate.return_value = {'has_product_identity': True, 'has_search_identity': False,
+                                         'has_challenge_ui': False, 'outside_product_text': ''}
+        await self.service._assert_extraction_page(self.jd, self.page, 'jd')
+
+    async def test_taobao_detail_still_strict(self):
+        self.page.url = fixtures.TAOBAO
+        self.locator.inner_text.return_value = '商品详情 安全验证'
+        with self.assertRaises(SafetyError):
+            await self.service._assert_extraction_page(self.service.taobao_browser, self.page, 'taobao')
+        guard = self.service.taobao_browser._taobao_guard
+        self.assertTrue(TaobaoNavigationGuard(guard.state_path).is_paused())

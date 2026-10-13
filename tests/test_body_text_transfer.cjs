@@ -136,6 +136,26 @@ cases.push(
     assert.equal(jdContext({body:false,title:false,price:false}).has_product_identity,false);
   }],
 );
+function searchContext({cards=true,title=true,price=true,challenge=false,outside='Search',context='search'}={}) {
+  const visible = {getClientRects:()=>[{}]};
+  const card = {...visible, querySelector:selector => (selector.includes('.p-name') ? title : price) ? visible : null};
+  const clone = {innerText:outside, querySelectorAll:selector=>{
+    assert.ok(selector.includes(context==='search' ? '#J_goodsList .gl-item' : '#detail'));
+    return [];
+  }};
+  const document = {body:{cloneNode:()=>clone},querySelector:()=>null,
+    querySelectorAll:selector=>selector.includes('#J_goodsList') ? (cards?[card]:[]) : (challenge?[visible]:[])};
+  const fn=vm.runInNewContext('('+serviceSource.slice(jsStart+4,jsEnd)+')',{document},{timeout:1000});
+  return fn(context);
+}
+cases.push(
+  ['JD search cards establish search identity without detail selectors',()=>assert.equal(searchContext().has_search_identity,true)],
+  ['JD search without title cannot establish identity',()=>assert.equal(searchContext({title:false}).has_search_identity,false)],
+  ['JD search without price cannot establish identity',()=>assert.equal(searchContext({price:false}).has_search_identity,false)],
+  ['JD empty search has no fabricated identity',()=>assert.equal(searchContext({cards:false}).has_search_identity,false)],
+  ['JD captcha remains visible over search cards',()=>assert.equal(searchContext({challenge:true}).has_challenge_ui,true)],
+  ['JD detail does not acquire search exemption',()=>assert.equal(searchContext({context:'detail'}).has_search_identity,false)],
+);
 let failures=0;
 for(const [name,test] of cases) {
   try {test(); console.log('PASS '+name);}
