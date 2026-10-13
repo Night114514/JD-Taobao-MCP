@@ -76,7 +76,7 @@ class ShoppingBrowserService:
                 if await page.locator("body").count():
                     body_text = await page.locator("body").inner_text(timeout=5_000)
             requires_verification = await _requires_extraction_verification(
-                page, body_text, platform
+                page, body_text, platform, context="search"
             )
             if platform == "taobao" and (
                 requires_verification
@@ -101,7 +101,7 @@ class ShoppingBrowserService:
                     if platform == "jd"
                     else await extract_taobao_search(page, max_results * 2)
                 )
-            await self._assert_extraction_page(browser, page, platform)
+            await self._assert_extraction_page(browser, page, platform, context="search")
             if requires_verification and not items:
                 return {
                     "success": False,
@@ -238,7 +238,7 @@ class ShoppingBrowserService:
         return detail
 
     async def _assert_extraction_page(
-        self, browser: BrowserController, page: Any, platform: str
+        self, browser: BrowserController, page: Any, platform: str, *, context: str = "detail"
     ) -> None:
         """Discard results if an awaited operation exposed login/verification."""
         try:
@@ -250,7 +250,7 @@ class ShoppingBrowserService:
                     raise SafetyError("Page DOM unavailable after extraction operation.")
                 text = await body.inner_text(timeout=5_000)
                 _ensure_page_platform(page, platform)
-                blocked = await _requires_extraction_verification(page, text, platform)
+                blocked = await _requires_extraction_verification(page, text, platform, context=context)
         except Exception as exc:
             browser.pause_taobao_automation("extraction_inspection_failed")
             raise SafetyError("Cannot inspect extraction page; results discarded.") from exc
@@ -533,7 +533,7 @@ class ShoppingBrowserService:
 
 
 
-async def _requires_extraction_verification(page: Any, text: str, platform: str) -> bool:
+async def _requires_extraction_verification(page: Any, text: str, platform: str, *, context: str = "detail") -> bool:
     """Keep Taobao strict; distinguish JD product copy from page-level challenges."""
     url = page.url
     if is_taobao_auth_url(url) or page_requires_user_verification("", url):
@@ -544,31 +544,37 @@ async def _requires_extraction_verification(page: Any, text: str, platform: str)
         return True
     signals = await page.evaluate(
         r"""
-        () => {
+        (context = "detail") => {
           // JD verification context: product copy is not a page-level challenge.
           const visible = (el) => !!el && el.getClientRects().length > 0;
           const hasProduct = visible(document.querySelector('#name h1, .sku-name'))
             && visible(document.querySelector('.summary-price .p-price, .summary-price-wrap .p-price'));
+          const hasSearch = context === 'search' && [...document.querySelectorAll('#J_goodsList .gl-item, li.gl-item')]
+            .some(card => visible(card) && visible(card.querySelector('.p-name a[href*="item.jd.com"]'))
+              && visible(card.querySelector('.p-price i, .p-price')));
           const challenge = [...document.querySelectorAll(
             'input[autocomplete="one-time-code"], input[name*="captcha"], iframe[src*="captcha"], #JDJRV-wrap, .JDJRV-wrap, .JDJRV-bigimg'
           )].some(visible);
           const outside = document.body?.cloneNode(true);
           outside?.querySelectorAll(
+            context === 'search' ? '#J_goodsList .gl-item, li.gl-item, script, style, noscript, template' :
             '#name, .sku-name, #detail, #comment, #comments-list, .comment-item, .J-detail-content, script, style, noscript, template'
           ).forEach(el => el.remove());
           return {
             has_product_identity: hasProduct,
+            has_search_identity: hasSearch,
             has_challenge_ui: challenge,
             outside_product_text: (outside?.innerText || outside?.textContent || '').slice(0, 5000)
           };
         }
-        """
+        """,
+        context,
     )
     _ensure_page_platform(page, platform)
     return (
         page_requires_user_verification("", page.url)
         or not isinstance(signals, dict)
-        or signals.get("has_product_identity") is not True
+        or signals.get("has_search_identity" if context == "search" else "has_product_identity") is not True
         or signals.get("has_challenge_ui") is not False
         or not isinstance(signals.get("outside_product_text"), str)
         or page_requires_user_verification(signals.get("outside_product_text", ""), page.url)

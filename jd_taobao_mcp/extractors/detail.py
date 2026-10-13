@@ -10,12 +10,89 @@ from playwright.async_api import Page
 from .helpers import compact_text, normalize_url, parse_price
 
 
+_REVIEW_SENTIMENT = {
+    "positive": [
+        "好用",
+        "满意",
+        "推荐",
+        "不错",
+        "很好",
+        "方便",
+        "简单",
+        "值得",
+        "性价比",
+        "喜欢",
+        "香",
+        "清洗",
+        "顺手",
+        "超香",
+        "大品牌",
+        "香甜",
+        "粒粒分明",
+        "完美",
+        "省心",
+        "治愈",
+        "强烈推荐",
+        "闭眼冲",
+        "稳定",
+        "灵敏",
+        "流畅",
+        "可爱",
+        "实用"
+    ],
+    "negative": [
+        "不满意",
+        "不好用",
+        "差评",
+        "很差",
+        "失望",
+        "后悔",
+        "退货",
+        "坏了",
+        "破损",
+        "异味",
+        "夹生",
+        "粘锅",
+        "溢锅",
+        "太慢",
+        "噪音",
+        "漏水",
+        "不推荐",
+        "垃圾",
+        "有异味",
+        "夹生饭",
+        "太慢了",
+        "噪音大",
+        "难用",
+        "踩雷",
+        "虚假",
+        "欺骗",
+        "套路"
+    ],
+    "neutral_phrases": [
+        "没有不满意",
+        "没有异味",
+        "无异味",
+        "不粘锅",
+        "不夹生",
+        "噪音小",
+        "噪音低",
+        "不费力"
+    ],
+    "positive_phrases": [
+        "后悔没有早点买"
+    ],
+    "traditional": "沒異滿後點買質歡薦壞貨夾鍋過",
+    "simplified": "没异满后点买质欢荐坏货夹锅过"
+}
+
+
 async def extract_product_detail(
     page: Page, platform: str, *, original_url: str | None = None
 ) -> dict[str, Any]:
     # Keep request metadata independent of canonical navigation and redirects.
     metadata_url = original_url if original_url is not None else page.url
-    selectors = _selectors(platform)
+    selectors = {**_selectors(platform), "review_sentiment": _REVIEW_SENTIMENT}
     raw = await page.evaluate(
         r"""
         (selectors) => {
@@ -137,16 +214,26 @@ async def extract_product_detail(
             }
             return null;
           };
-          const positiveTerms = ['好用', '满意', '推荐', '不错', '很好', '超香', '方便', '简单', '值得', '性价比', '喜欢', '大品牌', '香甜', '粒粒分明', '完美', '省心', '治愈', '强烈推荐', '闭眼冲', '稳定', '灵敏', '流畅', '可爱', '实用'];
-          const negativeTerms = ['不满意', '不好用', '差评', '很差', '垃圾', '失望', '退货', '坏了', '破损', '有异味', '夹生饭', '溢锅', '太慢了', '噪音大', '漏水', '不推荐', '难用', '踩雷', '虚假', '欺骗', '套路'];
-          const negationPhrases = ['后悔没有早点', '没有异味', '无异味', '不粘锅', '不夹生', '噪音小', '噪音低', '不费力'];
-          const isTrulyNegative = (text, term) => {
-            const index = text.indexOf(term);
-            if (index < 0) return false;
-            if (negationPhrases.some((phrase) => text.includes(phrase))) return false;
-            const before = text.slice(Math.max(0, index - 3), index);
-            if (/[没无非少小零]$/.test(before)) return false;
-            return true;
+          const sentimentConfig = selectors.review_sentiment || {};
+          const positiveTerms = sentimentConfig.positive || [];
+          const negativeTerms = sentimentConfig.negative || [];
+          const classifyReview = (content) => {
+            const traditional = sentimentConfig.traditional;
+            const simplified = sentimentConfig.simplified;
+            let text = [...content].map(c => traditional.includes(c) ? simplified[traditional.indexOf(c)] : c).join('');
+            const neutralPhrases = sentimentConfig.neutral_phrases;
+            const positivePhrases = sentimentConfig.positive_phrases;
+            const explicitPositive = positivePhrases.some(p => text.includes(p));
+            for (const phrase of [...neutralPhrases, ...positivePhrases]) text = text.split(phrase).join(' ');
+            if (negativeTerms.some(term => text.includes(term))) return 'negative';
+            for (const term of positiveTerms) {
+              let index = text.indexOf(term);
+              while (index >= 0) {
+                if (!/(?:不|没|无|非|没有)$/.test(text.slice(Math.max(0, index - 2), index))) return 'positive';
+                index = text.indexOf(term, index + term.length);
+              }
+            }
+            return explicitPositive ? 'positive' : '';
           };
           const reviewNodes = [];
           const reviewNodeSeen = new Set();
@@ -173,15 +260,14 @@ async def extract_product_detail(
             const key = `${user}\u0000${content}`;
             if (reviewSeen.has(key)) continue;
             reviewSeen.add(key);
-            const positive = positiveTerms.some((term) => content.includes(term));
-            const negative = negativeTerms.some((term) => isTrulyNegative(content, term));
+            const sentiment = classifyReview(content);
             reviews.push({
               user: clean(user, 80),
               content,
               helpful_count: helpfulCount(allText),
               time: clean(time, 80),
               variant: clean(variant, 160),
-              sentiment: negative ? 'negative' : (positive ? 'positive' : '')
+              sentiment
             });
           }
           const reviewSort = (a, b) => (b.helpful_count || 0) - (a.helpful_count || 0);
@@ -1087,62 +1173,60 @@ def _fallback_parameters_from_text(text: str | None) -> list[dict[str, str]]:
     return output[:20]
 
 
+def _review_sentiment(content: str) -> str:
+    """Conservative lexical classification; negations apply to their own spans."""
+    text = content.translate(str.maketrans(_REVIEW_SENTIMENT["traditional"], _REVIEW_SENTIMENT["simplified"]))
+    neutral_phrases = _REVIEW_SENTIMENT["neutral_phrases"]
+    positive_phrases = _REVIEW_SENTIMENT["positive_phrases"]
+    explicit_positive = any(phrase in text for phrase in positive_phrases)
+    for phrase in (*neutral_phrases, *positive_phrases):
+        text = text.replace(phrase, " ")
+    if any(term in text for term in _negative_terms()):
+        return "negative"
+    # Do not turn an explicitly negated positive term into positive evidence.
+    for term in _positive_terms():
+        for match in re.finditer(re.escape(term), text):
+            prefix = text[max(0, match.start() - 2):match.start()]
+            if not re.search(r"(?:不|没|无|非|没有)$", prefix):
+                return "positive"
+    return "positive" if explicit_positive else ""
+
+
 def _fallback_reviews_from_text(
     text: str | None, *, positive: bool, limit: int = 5
 ) -> list[dict[str, Any]]:
-    text = compact_text(text, 40_000)
+    text = (text or "")[:40_000]
     if not text:
         return []
-
-    # Prefer the actual Taobao review heading "user reviews + count".
-    actual_heading = "\u7528\u6237\u8bc4\u4ef7\u00b7"
-    end_heading = "\u67e5\u770b\u5168\u90e8\u8bc4\u4ef7"
-
-    start = text.find(actual_heading)
-
-    if start >= 0:
-        end = text.find(end_heading, start)
-
-        if end < 0:
-            end = min(len(text), start + 8000)
-
-        segment = text[start:end]
-    else:
-        # raw review_text has no heading; parse the whole value.
-        segment = text
-
-    review_re = re.compile(
-        r"(?P<user>[A-Za-z0-9_*\u4e00-\u9fff]{2,30})\s+"
-        r"(?P<date>20\d{2}-\d{2}-\d{2})\s+"
-        r"(?P<content>.*?)"
-        r"(?=(?:[A-Za-z0-9_*\u4e00-\u9fff]{2,30}\s+"
-        r"20\d{2}-\d{2}-\d{2}\s+)|$)"
-    )
-
-    negative_terms = _negative_terms()
+    heading = re.search(r"用户评价(?:·\d*)?|买家评价", text)
+    segment = text[heading.end():] if heading else text
+    segment = re.split(r"查看全部评价|全部评价|问大家|商品详情", segment, maxsplit=1)[0]
+    user = r"[A-Za-z0-9_*\u4e00-\u9fff]{2,30}"
+    date = r"20\d{2}(?:-\d{2}-\d{2}|年\d{1,2}月\d{1,2}日)"
+    # Dates establish a strong boundary. Without dates require review context
+    # plus a masked reviewer or a reviewer occupying its own complete line.
+    pattern = rf"(?<![\w*])(?P<dated_user>{user})[ \t\r\n]+(?P<date>{date})[ \t\r\n]+"
+    masked = r"[A-Za-z0-9_\u4e00-\u9fff]{1,12}\*{1,4}[A-Za-z0-9_\u4e00-\u9fff]{0,12}"
+    pattern += rf"|(?<![\w*])(?P<masked_user>{masked})[ \t\r\n]+"
+    if heading:
+        pattern += rf"|^(?P<line_user>[A-Za-z][A-Za-z0-9_]{{1,29}})[ \t]*\r?$\n"
+    matches = list(re.finditer(pattern, segment, re.M))
 
     output: list[dict[str, Any]] = []
     seen: set[tuple[str, str]] = set()
 
-    for match in review_re.finditer(segment):
-        user = compact_text(match.group("user"), 80)
-        date = compact_text(match.group("date"), 80)
-        content = compact_text(match.group("content"), 800)
-
-        if len(content) < 4:
+    for index, match in enumerate(matches):
+        if not heading and not match.group("date"):
             continue
-
-        has_negative = any(
-            term in content
-            for term in negative_terms
-        )
-
-        if positive:
-            if has_negative or not any(term in content for term in _positive_terms()):
-                continue
-        else:
-            if not has_negative:
-                continue
+        user = compact_text(match.group("dated_user") or match.groupdict().get("masked_user") or match.groupdict().get("line_user"), 80)
+        date = compact_text(match.group("date") or "", 80)
+        content_end = matches[index + 1].start() if index + 1 < len(matches) else len(segment)
+        content = compact_text(segment[match.end():content_end], 800)
+        if len(content) < 3:
+            continue
+        sentiment = _review_sentiment(content)
+        if sentiment != ("positive" if positive else "negative"):
+            continue
 
         key = (user, content)
 
@@ -1167,43 +1251,11 @@ def _fallback_reviews_from_text(
     return output
 
 def _positive_terms() -> tuple[str, ...]:
-    return (
-        "\u597d\u7528",
-        "\u6ee1\u610f",
-        "\u63a8\u8350",
-        "\u4e0d\u9519",
-        "\u5f88\u597d",
-        "\u65b9\u4fbf",
-        "\u7b80\u5355",
-        "\u503c\u5f97",
-        "\u6027\u4ef7\u6bd4",
-        "\u559c\u6b22",
-        "\u9999",
-        "\u6e05\u6d17",
-        "\u987a\u624b",
-    )
+    return tuple(_REVIEW_SENTIMENT["positive"])
 
 
 def _negative_terms() -> tuple[str, ...]:
-    return (
-        "\u4e0d\u6ee1\u610f",
-        "\u4e0d\u597d\u7528",
-        "\u5dee\u8bc4",
-        "\u5f88\u5dee",
-        "\u5931\u671b",
-        "\u540e\u6094",
-        "\u9000\u8d27",
-        "\u574f\u4e86",
-        "\u7834\u635f",
-        "\u5f02\u5473",
-        "\u5939\u751f",
-        "\u7c98\u9505",
-        "\u6ea2\u9505",
-        "\u592a\u6162",
-        "\u566a\u97f3",
-        "\u6f0f\u6c34",
-        "\u4e0d\u63a8\u8350",
-    )
+    return tuple(_REVIEW_SENTIMENT["negative"])
 
 
 def _between(text: str, start_token: str, end_token: str) -> str:
