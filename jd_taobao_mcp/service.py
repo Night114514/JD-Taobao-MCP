@@ -9,7 +9,7 @@ from urllib.parse import parse_qs, quote, quote_plus, urlencode, urljoin, urlpar
 from .browser import BrowserController
 from .config import Settings
 from .extractors import extract_jd_search, extract_product_detail, extract_taobao_search
-from .safety import SafetyError, ensure_allowed_url, page_requires_user_verification
+from .safety import SafetyError, VerificationRequired, ensure_allowed_url, page_requires_user_verification
 from .taobao_guard import is_taobao_auth_url
 
 
@@ -129,7 +129,15 @@ class ShoppingBrowserService:
         filtered = filtered[:max_results]
         effective_include_details = bool(include_details) and platform == "jd"
         if effective_include_details:
-            await self._enrich_search_results_with_details(platform, filtered)
+            try:
+                await self._enrich_search_results_with_details(platform, filtered)
+            except VerificationRequired as exc:
+                return {
+                    "success": False, "platform": platform, "keyword": keyword,
+                    "search_url": nav.get("url", ""), "count": 0, "items": [],
+                    "requires_user_verification": True, "message": str(exc),
+                    "detail_output_contract": _detail_output_contract(),
+                }
 
         return {
             "success": True,
@@ -256,7 +264,7 @@ class ShoppingBrowserService:
             raise SafetyError("Cannot inspect extraction page; results discarded.") from exc
         if blocked:
             browser.pause_taobao_automation("login_or_verification_required")
-            raise SafetyError("Login or verification detected during extraction; results discarded.")
+            raise VerificationRequired("Login or verification detected during extraction; results discarded.")
 
     async def extract_current_page(self) -> dict[str, Any]:
         # Keep the original controller: a snapshot must not switch profiles.
@@ -322,6 +330,8 @@ class ShoppingBrowserService:
                 continue
             try:
                 detail = await self.get_product_detail(url)
+            except VerificationRequired:
+                raise
             except Exception as exc:
                 item["detail_success"] = False
                 item["detail_error"] = str(exc)
@@ -334,14 +344,9 @@ class ShoppingBrowserService:
 
             item["detail_success"] = bool(detail.get("success"))
             if detail.get("requires_user_verification"):
-                item["detail_requires_user_verification"] = True
-                item["detail_message"] = detail.get("message", "")
-                item.update(
-                    _empty_detail_contract_fields(
-                        "requires_user_verification", product_url=str(url)
-                    )
+                raise VerificationRequired(
+                    detail.get("message") or "Manual verification required; bulk extraction stopped."
                 )
-                continue
 
             for key in (
                 "product_url",

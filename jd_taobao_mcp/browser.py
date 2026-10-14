@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from contextlib import contextmanager
+from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -123,7 +123,7 @@ class BrowserController:
             if not running:
                 return {"running": False, "message": "浏览器尚未启动。"}
             page = await self._checked_page_unlocked()
-            with self._checked_page_read(page):
+            async with self._checked_page_read(page):
                 title = await page.title()
             return {
                 "running": True,
@@ -170,13 +170,15 @@ class BrowserController:
             # Preserve read-only/manual-login diagnostics; pause is never resume.
             self.pause_taobao_automation("login_or_verification_required")
 
-    @contextmanager
-    def _checked_page_read(self, page: Page):
+    @asynccontextmanager
+    async def _checked_page_read(self, page: Page):
+        await self._inspect_taobao_page_before_navigation(page, allow_verification=True)
         try:
             yield
         except Exception as exc:
             try:
                 self._check_observed_page_url(page)
+                await self._inspect_taobao_page_before_navigation(page, allow_verification=True)
             except Exception as check_error:
                 # Keep both the original read error and persistence/check failure.
                 exc.add_note("Post-read page safety check also failed.")
@@ -184,13 +186,14 @@ class BrowserController:
             raise
         else:
             self._check_observed_page_url(page)
+            await self._inspect_taobao_page_before_navigation(page, allow_verification=True)
 
     def pause_taobao_automation(self, reason: str) -> None:
         if self._taobao_guard is not None:
             self._taobao_guard.pause(reason)
 
     async def _inspect_taobao_page_before_navigation(
-        self, page: Page
+        self, page: Page, *, allow_verification: bool = False
     ) -> None:
         if self._taobao_guard is None:
             return
@@ -201,6 +204,8 @@ class BrowserController:
 
         if is_taobao_auth_url(current_url):
             self._taobao_guard.pause()
+            if allow_verification:
+                return
             raise SafetyError(
                 "Taobao login page detected. Automation paused."
             )
@@ -212,15 +217,44 @@ class BrowserController:
             text = await body.inner_text(timeout=2_000)
             current_url = page.url
             self._ensure_controller_url(current_url)
+            # Scan all returned text. Excessive/unreliable inspection is not safe.
+            if not isinstance(text, str) or len(text) > 1_000_000:
+                raise SafetyError("Taobao verification inspection is incomplete.")
+            blocked = is_taobao_auth_url(current_url) or page_requires_user_verification(
+                text, current_url, full_text=True
+            )
+            if not blocked:
+                challenge = await body.evaluate(
+                    r"""(body) => {
+                      // Dedicated challenge controls, not arbitrary product copy.
+                      const selectors = 'input[autocomplete="one-time-code"], input[name*="captcha" i], iframe[src*="captcha" i], iframe[src*="punish" i], #nc_1_wrapper, .nc-container, #baxia-dialog-content, #JDJRV-wrap, .JDJRV-wrap';
+                      return [...body.querySelectorAll(selectors)].some(el => {
+                        const style = getComputedStyle(el);
+                        return el.getClientRects().length > 0 && style.visibility !== 'hidden' && style.display !== 'none';
+                      });
+                    }""",
+                    timeout=2_000,
+                )
+                if type(challenge) is not bool:
+                    raise SafetyError("Invalid Taobao challenge inspection result.")
+                current_url = page.url
+                self._ensure_controller_url(current_url)
+                blocked = challenge or is_taobao_auth_url(current_url) or page_requires_user_verification("", current_url)
         except Exception as exc:
-            self._taobao_guard.pause("pre_navigation_inspection_failed")
+            try:
+                self._taobao_guard.pause("pre_navigation_inspection_failed")
+            except Exception as pause_error:
+                exc.add_note("Persisting Taobao inspection pause also failed.")
+                raise exc from pause_error
             raise SafetyError(
                 "Cannot inspect current Taobao page. "
                 "Automation paused."
             ) from exc
 
-        if is_taobao_auth_url(current_url) or page_requires_user_verification(text, current_url):
+        if blocked:
             self._taobao_guard.pause()
+            if allow_verification:
+                return
             raise SafetyError(
                 "Taobao verification detected. Automation paused."
             )
@@ -678,7 +712,7 @@ class BrowserController:
             page = await self._checked_page_unlocked()
             timestamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
             path = self.settings.artifacts_dir / f"screenshot-{timestamp}.png"
-            with self._checked_page_read(page):
+            async with self._checked_page_read(page):
                 image = await page.screenshot(full_page=full_page)
             path.write_bytes(image)
             return {

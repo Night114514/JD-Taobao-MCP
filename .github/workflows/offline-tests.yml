@@ -59,4 +59,8 @@ jobs:
           node --check tests/test_body_text_transfer.cjs
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           node tests/test_body_text_transfer.cjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node --check tests/test_verification_ui.cjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node tests/test_verification_ui.cjs
           exit $LASTEXITCODE

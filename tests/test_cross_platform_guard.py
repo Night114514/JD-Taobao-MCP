@@ -39,6 +39,7 @@ class CrossPlatformGuardTests(unittest.IsolatedAsyncioTestCase):
         self.locator.first = self.locator
         self.locator.count = AsyncMock(return_value=1)
         self.locator.inner_text = AsyncMock(return_value="Product")
+        self.locator.evaluate = AsyncMock(return_value=False)  # No synthetic challenge controls.
         self.locator.scroll_into_view_if_needed = AsyncMock()
         self.locator.click = AsyncMock()
         self.locator.fill = AsyncMock()
