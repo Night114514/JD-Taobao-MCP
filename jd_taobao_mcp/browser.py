@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -122,8 +123,8 @@ class BrowserController:
             if not running:
                 return {"running": False, "message": "浏览器尚未启动。"}
             page = await self._checked_page_unlocked()
-            title = await page.title()
-            self._ensure_controller_url(page.url)
+            with self._checked_page_read(page):
+                title = await page.title()
             return {
                 "running": True,
                 "current_url": page.url,
@@ -159,8 +160,30 @@ class BrowserController:
 
     async def _checked_page_unlocked(self) -> Page:
         page = await self._active_page_unlocked()
-        self._ensure_controller_url(page.url)
+        self._check_observed_page_url(page)
         return page
+
+    def _check_observed_page_url(self, page: Page) -> None:
+        url = page.url
+        self._ensure_controller_url(url)
+        if self._taobao_guard is not None and is_taobao_auth_url(url):
+            # Preserve read-only/manual-login diagnostics; pause is never resume.
+            self.pause_taobao_automation("login_or_verification_required")
+
+    @contextmanager
+    def _checked_page_read(self, page: Page):
+        try:
+            yield
+        except Exception as exc:
+            try:
+                self._check_observed_page_url(page)
+            except Exception as check_error:
+                # Keep both the original read error and persistence/check failure.
+                exc.add_note("Post-read page safety check also failed.")
+                raise exc from check_error
+            raise
+        else:
+            self._check_observed_page_url(page)
 
     def pause_taobao_automation(self, reason: str) -> None:
         if self._taobao_guard is not None:
@@ -655,8 +678,8 @@ class BrowserController:
             page = await self._checked_page_unlocked()
             timestamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
             path = self.settings.artifacts_dir / f"screenshot-{timestamp}.png"
-            image = await page.screenshot(full_page=full_page)
-            self._ensure_controller_url(page.url)
+            with self._checked_page_read(page):
+                image = await page.screenshot(full_page=full_page)
             path.write_bytes(image)
             return {
                 "success": True,
