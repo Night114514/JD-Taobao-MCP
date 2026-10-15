@@ -38,6 +38,7 @@ class BrowserGuardTests(unittest.IsolatedAsyncioTestCase):
 
         body = Mock()
         body.count = AsyncMock(return_value=1)
+        body.evaluate = AsyncMock(return_value=False)  # No synthetic challenge controls.
         body.inner_text = AsyncMock(
             return_value="Normal product page"
         )

@@ -67,6 +67,10 @@ class SafetyError(RuntimeError):
     """Raised when an action violates the MCP server safety boundary."""
 
 
+class VerificationRequired(SafetyError):
+    """A confirmed verification transition must stop batch automation."""
+
+
 @dataclass(frozen=True, slots=True)
 class ElementSafetyMetadata:
     text: str = ""
@@ -152,10 +156,10 @@ def ensure_typing_allowed(metadata: ElementSafetyMetadata) -> None:
         )
 
 
-def page_requires_user_verification(text: str, url: str = "") -> bool:
+def page_requires_user_verification(text: str, url: str = "", *, full_text: bool = False) -> bool:
     parsed = urlparse(url)
     jd_login = (
         (parsed.hostname or "").lower().rstrip(".") == "passport.jd.com"
         and parsed.path.lower().startswith(("/new/login", "/uc/login", "/login"))
     )
-    return jd_login or bool(_VERIFICATION_RE.search(f"{url}\n{text[:5000]}"))
+    return jd_login or bool(_VERIFICATION_RE.search(f"{url}\n{text if full_text else text[:5000]}"))

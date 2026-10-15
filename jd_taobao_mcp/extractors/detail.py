@@ -7,6 +7,7 @@ from urllib.parse import parse_qs, urlparse
 
 from playwright.async_api import Page
 
+from ..safety import SafetyError
 from .helpers import compact_text, normalize_url, parse_price
 
 
@@ -87,11 +88,42 @@ _REVIEW_SENTIMENT = {
 }
 
 
+def _product_identity(url: str) -> tuple:
+    """Ignore tracking only for recognized item URLs; never merge marketplaces/SKUs."""
+    parsed = urlparse(url)
+    host = (parsed.hostname or "").lower().rstrip(".")
+    query = parse_qs(parsed.query, keep_blank_values=True)
+
+    def single(*names: str) -> str:
+        values = {value for name in names for value in query.get(name, [])}
+        if len(values) > 1:
+            raise SafetyError("Ambiguous product or SKU identity; results discarded.")
+        return next(iter(values), "")
+
+    sku = single("skuId", "skuid", "sku_id")
+    jd = re.fullmatch(r"/(\d+)\.html", parsed.path)
+    if host in {"item.jd.com", "item.m.jd.com"} and jd:
+        return ("jd", jd.group(1), sku)
+    item_hosts = {
+        "item.taobao.com": "taobao", "item.m.taobao.com": "taobao",
+        "h5.m.taobao.com": "taobao", "m.taobao.com": "taobao",
+        "detail.tmall.com": "tmall", "detail.m.tmall.com": "tmall",
+    }
+    item_id = single("id")
+    if host in item_hosts and parsed.path in {"/item.htm", "/awp/core/detail.htm"} and item_id:
+        return (item_hosts[host], item_id, sku)
+    # Unknown/non-item URLs retain all query values; only fragment/order normalize.
+    return (parsed.scheme.lower(), host, parsed.port, parsed.path,
+            tuple(sorted((key, tuple(sorted(values))) for key, values in query.items())))
+
+
 async def extract_product_detail(
     page: Page, platform: str, *, original_url: str | None = None
 ) -> dict[str, Any]:
     # Keep request metadata independent of canonical navigation and redirects.
-    metadata_url = original_url if original_url is not None else page.url
+    initial_url = page.url
+    initial_identity = _product_identity(initial_url)
+    metadata_url = original_url if original_url is not None else initial_url
     selectors = {**_selectors(platform), "review_sentiment": _REVIEW_SENTIMENT}
     raw = await page.evaluate(
         r"""
@@ -326,6 +358,7 @@ async def extract_product_detail(
           }
           const bodyTextAll = bodyTextParts.join('');
           return {
+            document_url: document.URL,
             title: firstText(selectors.title),
             price_text: firstText(selectors.price),
             shop: firstText(selectors.shop),
@@ -352,8 +385,16 @@ async def extract_product_detail(
         selectors,
     )
 
+    # The evaluate snapshot and both sides of the title await must identify one item.
+    document_url = raw.get("document_url", initial_url)
+    if not isinstance(document_url, str) or not document_url:
+        raise SafetyError("Missing evaluated document identity; results discarded.")
+    if _product_identity(document_url) != initial_identity or _product_identity(page.url) != initial_identity:
+        raise SafetyError("Product changed during evaluation; results discarded.")
     json_product = _find_product_json_ld(raw.get("json_ld", []))
     page_title = compact_text(await page.title(), 500)
+    if _product_identity(page.url) != initial_identity:
+        raise SafetyError("Product changed during title read; results discarded.")
     title = compact_text(
         raw.get("title")
         or raw.get("meta", {}).get("og_title")
