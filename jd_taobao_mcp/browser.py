@@ -194,18 +194,18 @@ class BrowserController:
 
     async def _inspect_taobao_page_before_navigation(
         self, page: Page, *, allow_verification: bool = False
-    ) -> None:
+    ) -> tuple[str, bool]:
         if self._taobao_guard is None:
-            return
+            return "", False
 
         current_url = page.url
         if not current_url.startswith(("http://", "https://")):
-            return
+            return "", False
 
         if is_taobao_auth_url(current_url):
             self._taobao_guard.pause()
             if allow_verification:
-                return
+                return "", True
             raise SafetyError(
                 "Taobao login page detected. Automation paused."
             )
@@ -254,10 +254,11 @@ class BrowserController:
         if blocked:
             self._taobao_guard.pause()
             if allow_verification:
-                return
+                return text, True
             raise SafetyError(
                 "Taobao verification detected. Automation paused."
             )
+        return text, False
 
     async def navigate(self, url: str) -> dict[str, Any]:
         ensure_allowed_url(url)
@@ -317,6 +318,9 @@ class BrowserController:
                 )
 
                 if self._taobao_guard is not None:
+                    await self._inspect_taobao_page_before_navigation(
+                        page, allow_verification=True
+                    )
                     if not result.get("success", False):
                         raise SafetyError(
                             "Taobao navigation result was unsuccessful."
@@ -325,6 +329,7 @@ class BrowserController:
                     if (
                         result.get("requires_user_verification", False)
                         or is_taobao_auth_url(page.url)
+                        or self._taobao_guard.is_paused()
                     ):
                         self._taobao_guard.pause(
                             "login_or_verification_required"
@@ -403,7 +408,12 @@ class BrowserController:
                 or page_requires_user_verification("", page.url)
             )
             body_text = ""
-            if await page.locator("body").count():
+            if self._taobao_guard is not None:
+                body_text, challenge = await self._inspect_taobao_page_before_navigation(
+                    page, allow_verification=True
+                )
+                requires_verification = requires_verification or challenge
+            elif await page.locator("body").count():
                 body_text = await page.locator("body").inner_text(timeout=5_000)
             requires_verification = (
                 requires_verification
@@ -415,6 +425,12 @@ class BrowserController:
 
             cookies = await self._context.cookies() if self._context else []
             self._ensure_controller_url(page.url)
+            if self._taobao_guard is not None:
+                # Cookies are an await boundary; inspect the current document again.
+                body_text, challenge = await self._inspect_taobao_page_before_navigation(
+                    page, allow_verification=True
+                )
+                requires_verification = requires_verification or challenge
             requires_verification = (
                 requires_verification
                 or is_taobao_auth_url(page.url)
