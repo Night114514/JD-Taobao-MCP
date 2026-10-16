@@ -53,10 +53,17 @@ def main() -> None:
     def audit(event, values):
         # Windows asyncio can use loopback sockets for its internal socket pair.
         # The server has no reason to create a child process or contact a site.
-        if event == "subprocess.Popen" or (
-            event == "socket.connect"
-            and values[1][0] not in {"127.0.0.1", "::1"}
-        ):
+        denied = event in {
+            "subprocess.Popen", "os.system", "os.exec", "os.spawn", "os.posix_spawn",
+        }
+        if event in {"socket.connect", "socket.bind"}:
+            address = values[1]
+            denied = not isinstance(address, tuple) or address[0] not in {"127.0.0.1", "::1"}
+        elif event == "socket.getaddrinfo":
+            denied = values[0] not in {"127.0.0.1", "::1"}
+        elif event in {"socket.sendto", "socket.sendmsg"}:
+            denied = True
+        if denied:
             blocked.append(event)
             raise RuntimeError("OFFLINE_IO_BLOCKED")
 

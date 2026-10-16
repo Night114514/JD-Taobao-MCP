@@ -9,6 +9,7 @@ from urllib.parse import parse_qs, quote, quote_plus, urlencode, urljoin, urlpar
 from .browser import BrowserController
 from .config import Settings
 from .extractors import extract_jd_search, extract_product_detail, extract_taobao_search
+from .extractors.detail import _product_identity
 from .safety import SafetyError, VerificationRequired, ensure_allowed_url, page_requires_user_verification
 from .taobao_guard import is_taobao_auth_url
 
@@ -599,6 +600,9 @@ def _canonical_detail_url(url: str) -> str:
     if not supported:
         return url
 
+    # Validate all ID/SKU aliases before canonicalization drops query values.
+    # The validator checks conflicts even for its unknown/mobile URL fallback.
+    _product_identity(url)
     query = parse_qs(parsed.query)
 
     item_id = (query.get("id") or [None])[0]
