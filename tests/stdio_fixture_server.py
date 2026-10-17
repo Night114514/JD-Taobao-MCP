@@ -18,6 +18,16 @@ DETAIL = {
     "platform": "taobao",
     "product_url": URL,
     "product_parameters": [{"name": "型號", "value": "MT7925"}],
+    "product_parameter_evidence": [{
+        "name": "型號", "value": "MT7925",
+        "source": "dom_parameters", "corroborated_by": ["dom_detail"],
+    }],
+    "product_parameter_conflicts": [{
+        "name": "型號", "selected_value": "MT7925",
+        "selected_source": "dom_parameters",
+        "alternatives": [{"source": "json_ld", "value": "OTHER_MODEL"}],
+    }],
+    "parameter_evidence_status": "provided",
     "good_reviews": [],
     "bad_reviews": [],
 }
@@ -26,7 +36,7 @@ SEARCH = {
     "items": [{"title": "離線測試", "price": 85.0, "url": URL}],
     "filters": {"include_details": False, "details_skipped_for_safety": True},
     "detail_output_contract": {
-        "required_fields": ["product_url", "product_parameters", "good_reviews", "bad_reviews"],
+        "optional_fields": ["product_parameter_evidence", "product_parameter_conflicts"],
     },
 }
 CURRENT = {"success": True, "product_like_data": DETAIL}

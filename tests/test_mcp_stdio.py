@@ -88,7 +88,12 @@ class MCPStdioTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue({"get_product_detail", "search_products",
                              "extract_current_page"}.issubset(tools))
             self.assertEqual(len(tools), len(listing.tools))
-            self.assertIn("Safe Mode", tools["search_products"].description)
+            description = tools["get_product_detail"].description or ""
+            for field in ("product_parameter_evidence", "product_parameter_conflicts",
+                          "parameter_evidence_status"):
+                self.assertIn(field, description)
+            self.assertIn("detail_output_contract", tools["search_products"].description)
+            self.assertIn("product_like_data", tools["extract_current_page"].description)
             self.assertIn("url", tools["get_product_detail"].inputSchema["required"])
         self.assertEqual(self.report["calls"], {})
 

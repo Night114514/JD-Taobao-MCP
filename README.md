@@ -247,11 +247,27 @@ JD controller 會核對導航目標、目前頁面，以及導航／互動後的
 
 Server 與管理 CLI 共用 `load_settings`，從專案根目錄載入 `.env`，且不覆蓋已明確設定的程序環境變數。相對 `BROWSER_PROFILE_DIR`、`ARTIFACTS_DIR` 及 `PLAYWRIGHT_BROWSERS_PATH` 均以專案根目錄解析，不隨呼叫者的工作目錄改變；CLI 不會更改工作目錄。若 MCP client 另行設定環境變數，執行 CLI 時亦須提供相同設定，並先核對 `status` 顯示的 State file。`status` 只讀取暫停狀態，不讀取 Cookie 或列出環境變數。
 
+## 淘寶參數來源及輸出契約
+
+`get_product_detail` 直接回傳詳情欄位；`extract_current_page` 的詳情位於 `product_like_data`。搜尋結果中的 `detail_output_contract` 只是欄位說明，並不代表每個搜尋項目已取得詳情證據。
+
+| 欄位 | 解讀方式 |
+|---|---|
+| `product_parameter_evidence` | 每項參數的選定值、`source` 及同頁相同值的 `corroborated_by` |
+| `product_parameter_conflicts` | 選定值以外的已觀察來源及值；應先檢查衝突再引用規格 |
+| `parameter_evidence_status=provided` | 已提供 evidence 及 conflict arrays；空陣列只描述本次提取所得 |
+| `parameter_evidence_status=not_provided` | 未提供證據陣列，不能推斷沒有衝突 |
+| `parameter_evidence_status=not_extracted` | 未執行詳情提取，例如 `get_product_detail` 被驗證頁攔截 |
+
+來源優先次序為 `visible_text` → `dom_parameters` → `dom_detail` → `json_ld` → `text_content`；所有參數來源都沒有結果時，才使用 `fallback_text`。`corroborated_by` 只代表同一頁的其他位置有相同值，並非獨立查證。
+
+`visible_text` 只使用 `document.body.innerText`；`text_content` 使用 `document.body.textContent`，可能包含隱藏文字，不會被標成可見來源。兩者分開保存至 evidence／conflict 建立階段，同名不同值會保留為衝突。`text_content` 是新增的來源值；既有必須欄位、evidence／conflict 結構及三個狀態值維持不變。
+
+`extract_current_page` 會檢查 snapshot 及目前頁面的登入／驗證訊號；被攔截時回傳 `success=false`、`requires_user_verification=true`，淘寶的 `product_like_data.parameter_evidence_status=not_extracted`，不呼叫商品 extractor。無法檢查 DOM 時會拒絕提取；淘寶 controller 亦會保存暫停狀態。
+
+`product_parameters_status.complete=true` 只代表至少提取到一項參數，並不代表規格完整。好評最多 5 條、差評最多 2 條；缺失或不足時，以空陣列／部分結果及 `status.reason` 表示，不會為補齊資料而操作淘寶頁面。`price_source=url_upStreamPrice` 代表價格來自原始連結的參數，不能當作已核實的即時售價。該參數只接受有限正數，`NaN`、`Infinity`、溢位及其他非法值會被忽略，不覆蓋頁面價格。
+
 ## 離線回歸測試
-
-`extract_current_page` 會檢查 snapshot 及目前頁面的登入／驗證訊號。被攔截時停止商品 extractor 並回傳 `success=false`、`requires_user_verification=true`；無法檢查 DOM 時亦會拒絕提取。淘寶 controller 會保存暫停狀態，並在未抽取的結果中標示 `parameter_evidence_status=not_extracted`。
-
-連結的 `upStreamPrice` 只接受有限正數；`NaN`、`Infinity`、溢位及非法值不會覆蓋正常頁面價格。即使參數有效，`price_source=url_upStreamPrice` 亦只表示價格來自連結，並非已查證的即時售價。
 
 只需安裝 Python 依賴，毋須安裝或啟動 Playwright 瀏覽器。以下命令使用 Python 內建 `unittest`，不需要額外安裝 `pytest`：
 
@@ -268,7 +284,7 @@ Server 與管理 CLI 共用 `load_settings`，從專案根目錄載入 `.env`，
 `tests/test_mcp_stdio.py` 透過真正的 `ClientSession`、stdio pipes 及獨立 Python 程序核對：
 
 - 生產 `server.py` 的 `__main__` 路徑、`initialize`、`tools/list`、工具說明及輸入 schema；此握手案例不呼叫工具。
-- 三個 Mock `tools/call` 的 JSON text／`structuredContent`、Unicode、巢狀資料及參數傳遞。
+- 三個 Mock `tools/call` 的 JSON text／`structuredContent`、Unicode、巢狀資料、來源衝突及參數傳遞。
 - 缺少必要參數、不存在的工具及 Mock `SafetyError` 的錯誤回應；錯誤後 session 仍可用，Mock service 不會被重試。
 - 測試 fixture 的啟動封鎖及正常關閉；每個 session 有時間上限，profile 與 artifacts 均使用臨時路徑。
 
