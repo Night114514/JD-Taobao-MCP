@@ -1,15 +1,130 @@
 from __future__ import annotations
 
+import math
 import re
 from typing import Any
+from urllib.parse import parse_qs, urlparse
 
 from playwright.async_api import Page
 
+from ..safety import SafetyError
 from .helpers import compact_text, normalize_url, parse_price
 
 
-async def extract_product_detail(page: Page, platform: str) -> dict[str, Any]:
-    selectors = _selectors(platform)
+_REVIEW_SENTIMENT = {
+    "positive": [
+        "好用",
+        "满意",
+        "推荐",
+        "不错",
+        "很好",
+        "方便",
+        "简单",
+        "值得",
+        "性价比",
+        "喜欢",
+        "香",
+        "清洗",
+        "顺手",
+        "超香",
+        "大品牌",
+        "香甜",
+        "粒粒分明",
+        "完美",
+        "省心",
+        "治愈",
+        "强烈推荐",
+        "闭眼冲",
+        "稳定",
+        "灵敏",
+        "流畅",
+        "可爱",
+        "实用"
+    ],
+    "negative": [
+        "不满意",
+        "不好用",
+        "差评",
+        "很差",
+        "失望",
+        "后悔",
+        "退货",
+        "坏了",
+        "破损",
+        "异味",
+        "夹生",
+        "粘锅",
+        "溢锅",
+        "太慢",
+        "噪音",
+        "漏水",
+        "不推荐",
+        "垃圾",
+        "有异味",
+        "夹生饭",
+        "太慢了",
+        "噪音大",
+        "难用",
+        "踩雷",
+        "虚假",
+        "欺骗",
+        "套路"
+    ],
+    "neutral_phrases": [
+        "没有不满意",
+        "没有异味",
+        "无异味",
+        "不粘锅",
+        "不夹生",
+        "噪音小",
+        "噪音低",
+        "不费力"
+    ],
+    "positive_phrases": [
+        "后悔没有早点买"
+    ],
+    "traditional": "沒異滿後點買質歡薦壞貨夾鍋過",
+    "simplified": "没异满后点买质欢荐坏货夹锅过"
+}
+
+
+def _product_identity(url: str) -> tuple:
+    """Ignore tracking only for recognized item URLs; never merge marketplaces/SKUs."""
+    parsed = urlparse(url)
+    host = (parsed.hostname or "").lower().rstrip(".")
+    query = parse_qs(parsed.query, keep_blank_values=True)
+
+    def single(*names: str) -> str:
+        values = {value for name in names for value in query.get(name, [])}
+        if len(values) > 1:
+            raise SafetyError("Ambiguous product or SKU identity; results discarded.")
+        return next(iter(values), "")
+
+    sku = single("skuId", "skuid", "sku_id")
+    jd = re.fullmatch(r"/(\d+)\.html", parsed.path)
+    if host in {"item.jd.com", "item.m.jd.com"} and jd:
+        return ("jd", jd.group(1), sku)
+    item_hosts = {
+        "item.taobao.com": "taobao", "item.m.taobao.com": "taobao",
+        "h5.m.taobao.com": "taobao", "m.taobao.com": "taobao",
+        "detail.tmall.com": "tmall", "detail.m.tmall.com": "tmall",
+    }
+    item_id = single("id")
+    if host in item_hosts and parsed.path in {"/item.htm", "/awp/core/detail.htm"} and item_id:
+        return (item_hosts[host], item_id, sku)
+    # Unknown/non-item URLs retain all query values; only fragment/order normalize.
+    return (parsed.scheme.lower(), host, parsed.port, parsed.path,
+            tuple(sorted((key, tuple(sorted(values))) for key, values in query.items())))
+
+
+async def extract_product_detail(
+    page: Page, platform: str, *, original_url: str | None = None
+) -> dict[str, Any]:
+    # Keep request metadata independent of canonical navigation and redirects.
+    initial_url = page.url
+    initial_identity = _product_identity(initial_url)
+    metadata_url = original_url if original_url is not None else initial_url
+    selectors = {**_selectors(platform), "review_sentiment": _REVIEW_SENTIMENT}
     raw = await page.evaluate(
         r"""
         (selectors) => {
@@ -131,16 +246,26 @@ async def extract_product_detail(page: Page, platform: str) -> dict[str, Any]:
             }
             return null;
           };
-          const positiveTerms = ['好用', '满意', '推荐', '不错', '很好', '超香', '方便', '简单', '值得', '性价比', '喜欢', '大品牌', '香甜', '粒粒分明', '完美', '省心', '治愈', '强烈推荐', '闭眼冲', '稳定', '灵敏', '流畅', '可爱', '实用'];
-          const negativeTerms = ['不满意', '不好用', '差评', '很差', '垃圾', '失望', '退货', '坏了', '破损', '有异味', '夹生饭', '溢锅', '太慢了', '噪音大', '漏水', '不推荐', '难用', '踩雷', '虚假', '欺骗', '套路'];
-          const negationPhrases = ['后悔没有早点', '没有异味', '无异味', '不粘锅', '不夹生', '噪音小', '噪音低', '不费力'];
-          const isTrulyNegative = (text, term) => {
-            const index = text.indexOf(term);
-            if (index < 0) return false;
-            if (negationPhrases.some((phrase) => text.includes(phrase))) return false;
-            const before = text.slice(Math.max(0, index - 3), index);
-            if (/[没无非少小零]$/.test(before)) return false;
-            return true;
+          const sentimentConfig = selectors.review_sentiment || {};
+          const positiveTerms = sentimentConfig.positive || [];
+          const negativeTerms = sentimentConfig.negative || [];
+          const classifyReview = (content) => {
+            const traditional = sentimentConfig.traditional;
+            const simplified = sentimentConfig.simplified;
+            let text = [...content].map(c => traditional.includes(c) ? simplified[traditional.indexOf(c)] : c).join('');
+            const neutralPhrases = sentimentConfig.neutral_phrases;
+            const positivePhrases = sentimentConfig.positive_phrases;
+            const explicitPositive = positivePhrases.some(p => text.includes(p));
+            for (const phrase of [...neutralPhrases, ...positivePhrases]) text = text.split(phrase).join(' ');
+            if (negativeTerms.some(term => text.includes(term))) return 'negative';
+            for (const term of positiveTerms) {
+              let index = text.indexOf(term);
+              while (index >= 0) {
+                if (!/(?:不|没|无|非|没有)$/.test(text.slice(Math.max(0, index - 2), index))) return 'positive';
+                index = text.indexOf(term, index + term.length);
+              }
+            }
+            return explicitPositive ? 'positive' : '';
           };
           const reviewNodes = [];
           const reviewNodeSeen = new Set();
@@ -167,15 +292,14 @@ async def extract_product_detail(page: Page, platform: str) -> dict[str, Any]:
             const key = `${user}\u0000${content}`;
             if (reviewSeen.has(key)) continue;
             reviewSeen.add(key);
-            const positive = positiveTerms.some((term) => content.includes(term));
-            const negative = negativeTerms.some((term) => isTrulyNegative(content, term));
+            const sentiment = classifyReview(content);
             reviews.push({
               user: clean(user, 80),
               content,
               helpful_count: helpfulCount(allText),
               time: clean(time, 80),
               variant: clean(variant, 160),
-              sentiment: negative ? 'negative' : (positive ? 'positive' : '')
+              sentiment
             });
           }
           const reviewSort = (a, b) => (b.helpful_count || 0) - (a.helpful_count || 0);
@@ -198,7 +322,43 @@ async def extract_product_detail(page: Page, platform: str) -> dict[str, Any]:
             if (images.length >= 30) break;
           }
           const bodyText = document.body?.innerText || '';
+          // Bound this field before Playwright serialization. Keep ordinary
+          // hidden DOM text, but exclude script/style/hydration containers.
+          const bodyTextLimit = 80000; // UTF-16 code units, <=480002 JSON UTF-8 bytes.
+          const bodyTextParts = [];
+          let bodyTextLength = 0;
+          let bodyTextAllTruncated = false;
+          if (document.body) {
+            const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, {
+              acceptNode: (node) => node.parentElement?.closest('script, style, noscript, template')
+                ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT
+            });
+            let node;
+            while ((node = walker.nextNode())) {
+              const text = node.nodeValue || '';
+              if (!text) continue;
+              // Preserve token boundaries without duplicating existing whitespace.
+              if (bodyTextLength && !/\s$/.test(bodyTextParts[bodyTextParts.length - 1])
+                  && !/^\s/.test(text)) {
+                if (bodyTextLength === bodyTextLimit) {
+                  bodyTextAllTruncated = true;
+                  break;
+                }
+                bodyTextParts.push('\n');
+                bodyTextLength += 1;
+              }
+              const remaining = bodyTextLimit - bodyTextLength;
+              bodyTextParts.push(text.slice(0, remaining));
+              bodyTextLength += Math.min(text.length, remaining);
+              if (text.length > remaining) {
+                bodyTextAllTruncated = true;
+                break;
+              }
+            }
+          }
+          const bodyTextAll = bodyTextParts.join('');
           return {
+            document_url: document.URL,
             title: firstText(selectors.title),
             price_text: firstText(selectors.price),
             shop: firstText(selectors.shop),
@@ -216,20 +376,34 @@ async def extract_product_detail(page: Page, platform: str) -> dict[str, Any]:
               description: document.querySelector('meta[name="description"]')?.content || document.querySelector('meta[property="og:description"]')?.content || '',
               canonical: document.querySelector('link[rel="canonical"]')?.href || ''
             },
-            body_text: bodyText
+            body_text: bodyText,
+            body_text_all: bodyTextAll,
+            body_text_all_truncated: bodyTextAllTruncated
           };
         }
         """,
         selectors,
     )
 
+    # The evaluate snapshot and both sides of the title await must identify one item.
+    document_url = raw.get("document_url", initial_url)
+    if not isinstance(document_url, str) or not document_url:
+        raise SafetyError("Missing evaluated document identity; results discarded.")
+    if _product_identity(document_url) != initial_identity or _product_identity(page.url) != initial_identity:
+        raise SafetyError("Product changed during evaluation; results discarded.")
     json_product = _find_product_json_ld(raw.get("json_ld", []))
+    page_title = compact_text(await page.title(), 500)
+    if _product_identity(page.url) != initial_identity:
+        raise SafetyError("Product changed during title read; results discarded.")
     title = compact_text(
         raw.get("title")
         or raw.get("meta", {}).get("og_title")
         or json_product.get("name"),
         500,
     )
+    if platform == "taobao" and _is_generic_taobao_title(title):
+        title = _clean_taobao_page_title(page_title) or title
+
     price_text = compact_text(raw.get("price_text"), 120)
     if not price_text:
         offers = json_product.get("offers") or {}
@@ -267,38 +441,122 @@ async def extract_product_detail(page: Page, platform: str) -> dict[str, Any]:
             break
 
     body_text = raw.get("body_text") or ""
+    body_text_all = raw.get("body_text_all") or body_text
+
     if platform == "taobao":
+        # Prefer visible/layout-aware innerText. Taobao summary parameter cards
+        # rely on whitespace/order that can be lost in document.body.textContent.
+        visible_taobao_parameters = _taobao_parameters_from_text(body_text)
+        all_taobao_parameters = _taobao_parameters_from_text(body_text_all)
+        taobao_parameters = _merge_parameters(
+            visible_taobao_parameters,
+            all_taobao_parameters,
+        )
+
         product_parameters = _merge_parameters(
-            _taobao_parameters_from_text(body_text),
+            taobao_parameters,
             _normalize_parameters(raw.get("product_parameters", [])),
             _normalize_parameters(raw.get("detail_product_parameters", [])),
         )
     else:
         product_parameters = _merge_parameters(
             _parameters_from_detail_text(body_text),
-            _normalize_parameters(raw.get("detail_product_parameters", [])),
-            _normalize_parameters(raw.get("product_parameters", [])),
+            _normalize_parameters(
+                raw.get("detail_product_parameters", [])
+            ),
+            _normalize_parameters(
+                raw.get("product_parameters", [])
+            ),
         )
+
     if not product_parameters:
-        product_parameters = _fallback_parameters_from_text(body_text)
-    high_praise_reviews = _normalize_reviews(raw.get("high_praise_reviews", []), limit=5)
-    high_dissatisfied_reviews = _normalize_reviews(
-        raw.get("high_dissatisfied_reviews", []), limit=2
+        product_parameters = _fallback_parameters_from_text(
+            body_text
+        )
+
+    high_praise_reviews = _normalize_reviews(
+        raw.get("high_praise_reviews", []),
+        limit=5,
     )
+
+    high_dissatisfied_reviews = _normalize_reviews(
+        raw.get("high_dissatisfied_reviews", []),
+        limit=2,
+    )
+
+    raw_review_text = compact_text(
+        raw.get("review_text"),
+        5000,
+    )
+
+    review_source_text = (
+        raw_review_text
+        or (
+            body_text_all
+            if platform == "taobao"
+            else body_text
+        )
+    )
+
     if not high_praise_reviews:
-        high_praise_reviews = _fallback_reviews_from_text(body_text, positive=True, limit=5)
+        high_praise_reviews = _fallback_reviews_from_text(
+            review_source_text,
+            positive=True,
+            limit=5,
+        )
+
     if not high_dissatisfied_reviews:
-        high_dissatisfied_reviews = _fallback_reviews_from_text(body_text, positive=False, limit=2)
+        high_dissatisfied_reviews = _fallback_reviews_from_text(
+            review_source_text,
+            positive=False,
+            limit=2,
+        )
+
+    if platform == "taobao" and raw_review_text:
+        # A broad selector can select only a heading/count. Retry each missing
+        # category against the full body without replacing structured results.
+        if not high_praise_reviews:
+            high_praise_reviews = _fallback_reviews_from_text(
+                body_text_all, positive=True, limit=5,
+            )
+        if not high_dissatisfied_reviews:
+            high_dissatisfied_reviews = _fallback_reviews_from_text(
+                body_text_all, positive=False, limit=2,
+            )
+
+    shop = compact_text(raw.get("shop"), 200)
+    price = parse_price(price_text)
+    price_source = "dom"
+    selected_sku_id = None
+
+    if platform == "taobao":
+        if not shop:
+            shop = _taobao_shop_from_text(body_text)
+
+        url_price, selected_sku_id = _taobao_price_from_url(metadata_url)
+        # Caller metadata cannot establish that a different price belongs to the SKU.
+        if price is None or price <= 0:
+            body_price = _taobao_price_near_title(body_text, title)
+            if body_price is not None:
+                price = body_price
+                price_text = f"\u00a5{body_price:.2f}"
+                price_source = "visible_product_text"
+            elif url_price is not None:
+                price = url_price
+                price_text = f"\u00a5{url_price:.2f}"
+                price_source = "url_upStreamPrice"
 
     return {
         "platform": platform,
         "url": page.url,
         "product_url": page.url,
         "title": title,
-        "price": parse_price(price_text),
+        "price": price,
         "price_text": price_text,
-        "shop": compact_text(raw.get("shop"), 200),
-        "review_text": compact_text(raw.get("review_text"), 120),
+        "price_source": price_source,
+        "selected_sku_id": selected_sku_id,
+        "shop": shop,
+        "review_text": compact_text(raw.get("review_text"), 5000),
         "sales_text": compact_text(raw.get("sales_text"), 120),
         "description": compact_text(raw.get("meta", {}).get("description"), 1200),
         "canonical_url": normalize_url(page.url, raw.get("meta", {}).get("canonical")),
@@ -308,8 +566,118 @@ async def extract_product_detail(page: Page, platform: str) -> dict[str, Any]:
         "high_dissatisfied_reviews": high_dissatisfied_reviews,
         "images": normalized_images,
         "page_text_excerpt": compact_text(raw.get("body_text"), 10_000),
+        "body_text_all_truncated": bool(raw.get("body_text_all_truncated", False)),
         "json_ld_product": _limit_json_value(json_product),
     }
+
+
+def _is_generic_taobao_title(title: str | None) -> bool:
+    value = compact_text(title, 200)
+    return not value or value in {
+        "\u53c2\u6570",
+        "\u53c2\u6570\u4fe1\u606f",
+        "\u5546\u54c1\u53c2\u6570",
+        "\u5b9d\u8d1d\u53c2\u6570",
+        "\u89c4\u683c\u53c2\u6570",
+        "\u7528\u6237\u8bc4\u4ef7",
+        "\u8bc4\u4ef7",
+        "\u5546\u54c1\u8be6\u60c5",
+    }
+
+
+def _clean_taobao_page_title(title: str | None) -> str:
+    value = compact_text(title, 500)
+
+    suffixes = (
+        "- \u6dd8\u5b9d\u7f51",
+        "_\u6dd8\u5b9d",
+        " - \u6dd8\u5b9d",
+        "| \u6dd8\u5b9d",
+        "\u2013 \u6dd8\u5b9d",
+    )
+
+    for suffix in suffixes:
+        if value.endswith(suffix):
+            value = value[:-len(suffix)].strip()
+
+    return value
+
+
+def _taobao_price_from_url(
+    url: str,
+) -> tuple[float | None, str | None]:
+    try:
+        query = parse_qs(urlparse(url).query)
+    except ValueError:
+        return None, None
+
+    sku_id = (query.get("skuId") or [None])[0]
+    raw_price = (query.get("upStreamPrice") or [None])[0]
+
+    if raw_price is None:
+        return None, sku_id
+
+    try:
+        cents = float(raw_price)
+    except (TypeError, ValueError):
+        return None, sku_id
+
+    if not math.isfinite(cents) or cents <= 0:
+        return None, sku_id
+
+    return round(cents / 100.0, 2), sku_id
+
+
+def _taobao_price_near_title(
+    text: str | None,
+    title: str | None,
+) -> float | None:
+    text = compact_text(text, 40_000)
+    title = compact_text(title, 500)
+
+    if not text:
+        return None
+
+    start = text.find(title) if title else -1
+
+    segment = (
+        text[start:start + 1000]
+        if start >= 0
+        else text[:3000]
+    )
+
+    for match in re.finditer(
+        r"(?:\u00a5|\uffe5)\s*([0-9]+(?:\.[0-9]{1,2})?)",
+        segment,
+    ):
+        try:
+            value = float(match.group(1))
+        except ValueError:
+            continue
+
+        if value > 0:
+            return value
+
+    return None
+
+
+def _taobao_shop_from_text(text: str | None) -> str:
+    text = compact_text(text, 10_000)
+
+    if not text:
+        return ""
+
+    patterns = (
+        r"\u641c\u672c\u5e97\s+(.{2,80}?)\s+\d(?:\.\d)?\s+88VIP\u597d\u8bc4\u7387",
+        r"\u641c\u672c\u5e97\s+(.{2,80}?)\s+88VIP\u597d\u8bc4\u7387",
+    )
+
+    for pattern in patterns:
+        match = re.search(pattern, text)
+        if match:
+            return compact_text(match.group(1), 200)
+
+    return ""
 
 
 def _selectors(platform: str) -> dict[str, list[str]]:
@@ -426,91 +794,130 @@ def _merge_parameters(*sources: list[dict[str, str]]) -> list[dict[str, str]]:
     return output
 
 
-def _taobao_parameters_from_text(text: str | None) -> list[dict[str, str]]:
-    text = compact_text(text, 50_000)
+def _taobao_parameters_from_text(
+    text: str | None,
+) -> list[dict[str, str]]:
+    text = compact_text(text, 80_000)
     if not text:
         return []
 
-    start = _first_existing_index(
-        text,
-        (
-            "\u5546\u54c1\u53c2\u6570",
-            "\u5b9d\u8d1d\u53c2\u6570",
-            "\u89c4\u683c\u53c2\u6570",
-            "\u53c2\u6570\u4fe1\u606f",
-            "\u4ea7\u54c1\u53c2\u6570",
-            "\u53c2\u6570",
-        ),
-        0,
+    parameter_heading = re.compile(r"参数信息|商品参数|宝贝参数|规格参数")
+    section_boundary = re.compile(
+        r"图文详情|商品详情|用户评价|买家评价|" + parameter_heading.pattern
     )
-    if start == len(text):
-        start = 0
-    end = _first_existing_index(
-        text,
-        (
-            "\u5b9d\u8d1d\u8bc4\u4ef7",
-            "\u7d2f\u8ba1\u8bc4\u4ef7",
-            "\u8bc4\u4ef7",
-            "\u95ee\u5927\u5bb6",
-            "\u5546\u54c1\u8be6\u60c5",
-            "\u52a0\u5165\u8d2d\u7269\u8f66",
-            "\u7acb\u5373\u8d2d\u4e70",
-        ),
-        start + 2,
-    )
-    segment = text[start:end] if end > start else text[start : start + 6000]
-    labels = (
+
+    expected_labels = (
+        "\u9002\u7528\u7f51\u7edc\u7c7b\u578b",
+        "\u7f51\u5361\u63d2\u53e3",
+        "\u662f\u5426\u65e0\u7ebf",
+        "\u4f20\u8f93\u901f\u5ea6",
         "\u54c1\u724c",
         "\u578b\u53f7",
-        "\u8d27\u53f7",
-        "\u4ea7\u5730",
-        "\u989c\u8272\u5206\u7c7b",
-        "\u529f\u7387",
-        "\u989d\u5b9a\u529f\u7387",
-        "\u989d\u5b9a\u7535\u538b",
-        "\u80fd\u6548\u7b49\u7ea7",
-        "\u63a7\u5236\u65b9\u5f0f",
-        "\u64cd\u63a7\u65b9\u5f0f",
-        "\u9762\u677f\u6750\u8d28",
-        "\u9762\u677f\u7c7b\u578b",
-        "\u7089\u5934",
-        "\u7089\u5934\u6570\u91cf",
-        "\u706b\u529b\u6863\u4f4d",
-        "\u9002\u7528\u9505\u5177",
-        "\u662f\u5426\u914d\u9505",
-        "\u529f\u80fd",
-        "\u5c3a\u5bf8",
-        "\u91cd\u91cf",
-        "\u5305\u88c5\u6e05\u5355",
-        "CCC\u8ba4\u8bc1\u7f16\u53f7",
-        "3C\u8bc1\u4e66\u7f16\u53f7",
+        "\u552e\u540e\u670d\u52a1",
+        "\u9002\u7528\u573a\u666f",
+        "\u65e0\u7ebf\u534f\u8bae",
+        "\u9891\u6bb5\u7c7b\u578b",
+        "\u6210\u8272",
     )
-    positions: list[tuple[int, str, int]] = []
-    for label in labels:
-        for pattern in (
-            rf"(?<!\S){re.escape(label)}(?:\s*[:：]\s*|\s+)",
-            rf"{re.escape(label)}(?:\s*[:：]\s*)",
-        ):
-            match = re.search(pattern, segment)
-            if match:
-                positions.append((match.start(), label, match.end()))
-                break
-    positions.sort(key=lambda item: item[0])
+
+    expected_labels = tuple(dict.fromkeys(expected_labels + _DETAIL_PARAM_LABELS))
+
+    # There can be more than one "parameter info" label:
+    # one in the navigation bar and another above the actual data.
+    # Score each bounded parameter section and keep
+    # the region containing the most real parameter labels.
+    candidates: list[tuple[int, str]] = []
+    for heading in parameter_heading.finditer(text):
+        boundary = section_boundary.search(text, heading.end())
+        if boundary:
+            segment = text[heading.end():boundary.start()]
+            score = sum(
+                1 for label in expected_labels
+                if label in segment
+            )
+            candidates.append((score, segment))
+
+    if not candidates:
+        return []
+
+    score, segment = max(candidates, key=lambda item: item[0])
+
+    if score < 3:
+        return []
 
     output: list[dict[str, str]] = []
     seen: set[str] = set()
-    for index, (_, label, value_start) in enumerate(positions):
-        value_end = positions[index + 1][0] if index + 1 < len(positions) else len(segment)
-        value = compact_text(segment[value_start:value_end], 500)
-        value = re.sub(r"^(?:\u5df2\u9009|\u53c2\u6570|\u5546\u54c1\u53c2\u6570)\s*", "", value)
-        if not value or value in {"-", "\u6682\u65e0", "\u65e0"} or label in seen:
-            continue
-        seen.add(label)
+
+    def add(name: str, value: str) -> None:
+        name = compact_text(name, 120)
+        value = compact_text(value, 300)
+
+        if not name or not value or name in seen:
+            return
+
+        seen.add(name)
         output.append(
-            {"name": label, "value": value, "group": "\u6dd8\u5b9d\u53c2\u6570\u4fe1\u606f"}
+            {
+                "name": name,
+                "value": value,
+                "group": "\u6dd8\u5b9d\u53c2\u6570\u4fe1\u606f",
+            }
         )
-        if len(output) >= 40:
-            break
+
+    # These Taobao summary cards use VALUE -> LABEL.
+    reverse_labels = (
+        "\u9002\u7528\u7f51\u7edc\u7c7b\u578b",
+        "\u7f51\u5361\u63d2\u53e3",
+        "\u662f\u5426\u65e0\u7ebf",
+        "\u4f20\u8f93\u901f\u5ea6",
+    )
+
+    for label in reverse_labels:
+        match = re.search(
+            rf"([^\s]{{1,60}})\s+{re.escape(label)}",
+            segment,
+        )
+        if match:
+            add(label, match.group(1))
+
+    # The lower list uses LABEL -> VALUE.
+    forward_labels = (
+        "\u54c1\u724c",
+        "\u578b\u53f7",
+        "\u552e\u540e\u670d\u52a1",
+        "\u9002\u7528\u573a\u666f",
+        "\u65e0\u7ebf\u534f\u8bae",
+        "\u9891\u6bb5\u7c7b\u578b",
+        "\u6210\u8272",
+    )
+
+    forward_labels = tuple(dict.fromkeys(forward_labels + _DETAIL_PARAM_LABELS))
+
+    positions: list[tuple[int, str]] = []
+
+    for label in forward_labels:
+        match = re.search(rf"(?<!\S){re.escape(label)}(?!\S)", segment)
+        if match:
+            positions.append((match.start(), label))
+
+    positions.sort(key=lambda item: item[0])
+
+    for index, (pos, label) in enumerate(positions):
+        value_start = pos + len(label)
+
+        value_end = (
+            positions[index + 1][0]
+            if index + 1 < len(positions)
+            else len(segment)
+        )
+
+        value = compact_text(
+            segment[value_start:value_end],
+            300,
+        )
+
+        add(label, value)
+
     return output
 
 
@@ -667,110 +1074,98 @@ def _fallback_parameters_from_text(text: str | None) -> list[dict[str, str]]:
     return output[:20]
 
 
+def _review_sentiment(content: str) -> str:
+    """Conservative lexical classification; negations apply to their own spans."""
+    text = content.translate(str.maketrans(_REVIEW_SENTIMENT["traditional"], _REVIEW_SENTIMENT["simplified"]))
+    neutral_phrases = _REVIEW_SENTIMENT["neutral_phrases"]
+    positive_phrases = _REVIEW_SENTIMENT["positive_phrases"]
+    explicit_positive = any(phrase in text for phrase in positive_phrases)
+    for phrase in (*neutral_phrases, *positive_phrases):
+        text = text.replace(phrase, " ")
+    if any(term in text for term in _negative_terms()):
+        return "negative"
+    # Do not turn an explicitly negated positive term into positive evidence.
+    for term in _positive_terms():
+        for match in re.finditer(re.escape(term), text):
+            prefix = text[max(0, match.start() - 2):match.start()]
+            if not re.search(r"(?:不|没|无|非|没有)$", prefix):
+                return "positive"
+    return "positive" if explicit_positive else ""
+
+
 def _fallback_reviews_from_text(
     text: str | None, *, positive: bool, limit: int = 5
 ) -> list[dict[str, Any]]:
-    text = compact_text(text, 30_000)
+    text = (text or "")[:40_000]
     if not text:
         return []
+    heading = re.search(r"用户评价(?:·\d*)?|买家评价", text)
+    segment = text[heading.end():] if heading else text
+    segment = re.split(r"查看全部评价|全部评价|问大家|商品详情", segment, maxsplit=1)[0]
+    user = r"[A-Za-z0-9_*\u4e00-\u9fff]{2,30}"
+    date = r"20\d{2}(?:-\d{2}-\d{2}|年\d{1,2}月\d{1,2}日)"
+    # Dates establish a strong boundary. Without dates require review context
+    # plus a masked reviewer or a reviewer occupying its own complete line.
+    pattern = rf"(?<![\w*])(?P<dated_user>{user})[ \t\r\n]+(?P<date>{date})[ \t\r\n]+"
+    masked = r"[A-Za-z0-9_\u4e00-\u9fff]{1,12}\*{1,4}[A-Za-z0-9_\u4e00-\u9fff]{0,12}"
+    pattern += rf"|(?<![\w*])(?P<masked_user>{masked})[ \t\r\n]+"
+    if heading:
+        pattern += rf"|^(?P<line_user>[A-Za-z][A-Za-z0-9_]{{1,29}}|[\u4e00-\u9fff]{{2,4}})[ \t]*\r?$\n"
+    matches = []
+    for match in re.finditer(pattern, segment, re.M):
+        line_user = match.groupdict().get("line_user")
+        # Short review prose and section labels are not new Chinese reviewers.
+        if line_user and re.fullmatch(r"[\u4e00-\u9fff]{2,4}", line_user) and (
+            _review_sentiment(line_user)
+            or line_user in {"商品描述", "产品描述", "商品介绍", "产品介绍", "商品说明", "产品说明"}
+        ):
+            continue
+        matches.append(match)
 
-    start_token = "\u4e70\u5bb6\u8bc4\u4ef7"
-    start = text.find(start_token)
-    if start < 0:
-        return []
-    end = _first_existing_index(
-        text,
-        ("\u5168\u90e8\u8bc4\u4ef7", "\u95ee\u5927\u5bb6", "\u5546\u54c1\u8be6\u60c5"),
-        start + len(start_token),
-    )
-    review_text = text[start:end] if end > start else text[start : start + 6_000]
-
-    user_pattern = r"(?:[A-Za-z0-9_\u4e00-\u9fff]{1,12}\*{1,4}[A-Za-z0-9_\u4e00-\u9fff]{0,12}|[\u4e00-\u9fffA-Za-z0-9_]{2,24})"
-    matches = list(re.finditer(rf"\s({user_pattern})\s+", review_text))
-    positive_terms = _positive_terms()
-    negative_terms = _negative_terms()
     output: list[dict[str, Any]] = []
     seen: set[tuple[str, str]] = set()
 
     for index, match in enumerate(matches):
-        user = compact_text(match.group(1), 80)
-        if user in {
-            "\u4e70\u5bb6\u8bc4\u4ef7",
-            "\u8d85",
-            "\u64cd\u4f5c\u8d85\u4fbf\u6377",
-            "\u5bb9\u91cf\u591f\u5bb6\u5ead\u7528",
-        }:
+        if not heading and not match.group("date"):
             continue
-        content_start = match.end()
-        content_end = matches[index + 1].start() if index + 1 < len(matches) else len(review_text)
-        content = compact_text(review_text[content_start:content_end], 800)
-        if len(content) < 12:
+        user = compact_text(match.group("dated_user") or match.groupdict().get("masked_user") or match.groupdict().get("line_user"), 80)
+        date = compact_text(match.group("date") or "", 80)
+        content_end = matches[index + 1].start() if index + 1 < len(matches) else len(segment)
+        content = compact_text(segment[match.end():content_end], 800)
+        if len(content) < 3:
             continue
-        has_negative = any(term in content for term in negative_terms)
-        has_positive = any(term in content for term in positive_terms)
-        if positive and has_negative:
+        sentiment = _review_sentiment(content)
+        if sentiment != ("positive" if positive else "negative"):
             continue
-        if not positive and not has_negative:
-            continue
-        if positive and not has_positive and output:
-            continue
+
         key = (user, content)
+
         if key in seen:
             continue
+
         seen.add(key)
+
         output.append(
             {
                 "user": user,
                 "content": content,
                 "helpful_count": None,
-                "time": "",
+                "time": date,
                 "variant": "",
             }
         )
+
         if len(output) >= limit:
             break
 
     return output
 
-
 def _positive_terms() -> tuple[str, ...]:
-    return (
-        "\u597d\u7528",
-        "\u6ee1\u610f",
-        "\u63a8\u8350",
-        "\u4e0d\u9519",
-        "\u5f88\u597d",
-        "\u65b9\u4fbf",
-        "\u7b80\u5355",
-        "\u503c\u5f97",
-        "\u6027\u4ef7\u6bd4",
-        "\u559c\u6b22",
-        "\u9999",
-        "\u6e05\u6d17",
-        "\u987a\u624b",
-    )
+    return tuple(_REVIEW_SENTIMENT["positive"])
 
 
 def _negative_terms() -> tuple[str, ...]:
-    return (
-        "\u4e0d\u6ee1\u610f",
-        "\u4e0d\u597d\u7528",
-        "\u5dee\u8bc4",
-        "\u5f88\u5dee",
-        "\u5931\u671b",
-        "\u540e\u6094",
-        "\u9000\u8d27",
-        "\u574f\u4e86",
-        "\u7834\u635f",
-        "\u5f02\u5473",
-        "\u5939\u751f",
-        "\u7c98\u9505",
-        "\u6ea2\u9505",
-        "\u592a\u6162",
-        "\u566a\u97f3",
-        "\u6f0f\u6c34",
-        "\u4e0d\u63a8\u8350",
-    )
+    return tuple(_REVIEW_SENTIMENT["negative"])
 
 
 def _between(text: str, start_token: str, end_token: str) -> str:

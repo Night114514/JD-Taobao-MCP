@@ -1,21 +1,39 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote, quote_plus, urlparse
+from urllib.parse import parse_qs, quote, quote_plus, urlencode, urljoin, urlparse
 
 from .browser import BrowserController
 from .config import Settings
 from .extractors import extract_jd_search, extract_product_detail, extract_taobao_search
-from .safety import page_requires_user_verification
+from .extractors.detail import _product_identity
+from .safety import SafetyError, VerificationRequired, ensure_allowed_url, page_requires_user_verification
+from .taobao_guard import is_taobao_auth_url
+
+
+@contextmanager
+def _pause_on_extraction_failure(browser: BrowserController):
+    try:
+        yield
+    except Exception as exc:
+        try:
+            browser.pause_taobao_automation("extraction_failed")
+        except Exception as pause_error:
+            exc.add_note(f"Persisting extraction pause also failed: {pause_error!r}")
+        raise
 
 
 class ShoppingBrowserService:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
         self.jd_browser = BrowserController(self._settings_for_platform("jd"))
-        self.taobao_browser = BrowserController(self._settings_for_platform("taobao"))
+        self.taobao_browser = BrowserController(
+            self._settings_for_platform("taobao"),
+            taobao_safe_mode=True,
+        )
         self.browser = self.taobao_browser
 
     async def search_products(
@@ -48,19 +66,43 @@ class ShoppingBrowserService:
         nav = await self._open_search_page(browser, platform, keyword)
         async with browser.lock:
             page = await browser.get_page()
-            scroll_rounds = 3 if platform == "taobao" and self.settings.taobao_search_mode == "mobile" else 1
-            for _ in range(scroll_rounds):
+            # Safe mode: do not scroll Taobao search results.
+            if platform == "jd":
+                _ensure_page_platform(page, platform)
                 await page.mouse.wheel(0, 900)
                 await page.wait_for_timeout(self.settings.action_delay_ms)
+            _ensure_page_platform(page, platform)
             body_text = ""
-            if await page.locator("body").count():
-                body_text = await page.locator("body").inner_text(timeout=5_000)
-            items = (
-                await extract_jd_search(page, max_results * 2)
-                if platform == "jd"
-                else await extract_taobao_search(page, max_results * 2)
+            with _pause_on_extraction_failure(browser):
+                if await page.locator("body").count():
+                    body_text = await page.locator("body").inner_text(timeout=5_000)
+            requires_verification = await _requires_extraction_verification(
+                page, body_text, platform, context="search"
             )
-            requires_verification = page_requires_user_verification(body_text, page.url)
+            if platform == "taobao" and (
+                requires_verification
+                or nav.get("requires_user_verification", False)
+            ):
+                browser.pause_taobao_automation("login_or_verification_required")
+                return {
+                    "success": False,
+                    "platform": platform,
+                    "keyword": keyword,
+                    "requires_user_verification": True,
+                    "url": page.url,
+                    "message": "Manual verification required. Automation stopped.",
+                    "items": [],
+                    "detail_output_contract": _detail_output_contract(),
+                }
+
+            _ensure_page_platform(page, platform)
+            with _pause_on_extraction_failure(browser):
+                items = (
+                    await extract_jd_search(page, max_results * 2)
+                    if platform == "jd"
+                    else await extract_taobao_search(page, max_results * 2)
+                )
+            await self._assert_extraction_page(browser, page, platform, context="search")
             if requires_verification and not items:
                 return {
                     "success": False,
@@ -86,8 +128,17 @@ class ShoppingBrowserService:
                 reverse=True,
             )
         filtered = filtered[:max_results]
-        if include_details:
-            await self._enrich_search_results_with_details(platform, filtered)
+        effective_include_details = bool(include_details) and platform == "jd"
+        if effective_include_details:
+            try:
+                await self._enrich_search_results_with_details(platform, filtered)
+            except VerificationRequired as exc:
+                return {
+                    "success": False, "platform": platform, "keyword": keyword,
+                    "search_url": nav.get("url", ""), "count": 0, "items": [],
+                    "requires_user_verification": True, "message": str(exc),
+                    "detail_output_contract": _detail_output_contract(),
+                }
 
         return {
             "success": True,
@@ -99,7 +150,10 @@ class ShoppingBrowserService:
                 "min_price": min_price,
                 "max_price": max_price,
                 "sort": sort,
-                "include_details": include_details,
+                "include_details": effective_include_details,
+                "details_skipped_for_safety": (
+                    platform == "taobao" and bool(include_details)
+                ),
             },
             "items": filtered,
             "detail_output_contract": _detail_output_contract(),
@@ -111,19 +165,43 @@ class ShoppingBrowserService:
         }
 
     async def get_product_detail(self, url: str) -> dict[str, Any]:
+        original_url = ensure_allowed_url(url)
         platform = platform_from_url(url)
         browser = self._browser_for_platform(platform)
-        nav = await browser.navigate(url)
+        detail_url = _canonical_detail_url(original_url)
+        nav = await browser.navigate(detail_url)
         async with browser.lock:
             page = await browser.get_page()
+            _ensure_page_platform(page, platform)
             body_text = ""
-            if await page.locator("body").count():
-                body_text = await page.locator("body").inner_text(timeout=5_000)
-            requires_verification = page_requires_user_verification(body_text, page.url)
+            with _pause_on_extraction_failure(browser):
+                if await page.locator("body").count():
+                    body_text = await page.locator("body").inner_text(timeout=5_000)
+            requires_verification = await _requires_extraction_verification(
+                page, body_text, platform
+            )
+            if platform == "taobao" and (
+                requires_verification
+                or nav.get("requires_user_verification", False)
+            ):
+                browser.pause_taobao_automation("login_or_verification_required")
+                return {
+                    "success": False,
+                    "platform": platform,
+                    "original_url": original_url,
+                    "url": page.url,
+                    "product_url": page.url,
+                    "requires_user_verification": True,
+                    "message": "Manual verification required. Automation stopped.",
+                    **_empty_detail_contract_fields(
+                        "requires_user_verification", product_url=page.url
+                    ),
+                }
             if requires_verification and not _page_has_product_content(body_text):
                 return {
                     "success": False,
                     "platform": platform,
+                    "original_url": original_url,
                     "url": page.url,
                     "product_url": page.url,
                     "requires_user_verification": True,
@@ -133,11 +211,30 @@ class ShoppingBrowserService:
                     ),
                 }
             await self._prepare_product_detail_page(page, platform)
-            detail = await extract_product_detail(page, platform)
+            await self._assert_extraction_page(browser, page, platform)
+            with _pause_on_extraction_failure(browser):
+                detail = await extract_product_detail(
+                    page, platform, original_url=original_url
+                )
+            await self._assert_extraction_page(browser, page, platform)
+            if platform == "taobao":
+                unavailable_markers = (
+                    "\u8a72\u5546\u54c1\u4e2d\u570b\u9999\u6e2f\u4e0d\u53ef\u552e\u8ce3",
+                    "\u8be5\u5546\u54c1\u4e2d\u56fd\u9999\u6e2f\u4e0d\u53ef\u552e\u5356",
+                )
+                unavailable_message = next(
+                    (marker for marker in unavailable_markers if marker in body_text),
+                    "",
+                )
+                detail["availability_status"] = (
+                    "unavailable_for_region" if unavailable_message else "unknown"
+                )
+                detail["availability_message"] = unavailable_message
         _apply_detail_output_contract(detail)
         detail.update(
             {
                 "success": True,
+                "original_url": original_url,
                 "requires_user_verification": False,
                 "verification_warning": requires_verification
                 or nav.get("requires_user_verification", False),
@@ -149,13 +246,71 @@ class ShoppingBrowserService:
         )
         return detail
 
+    async def _assert_extraction_page(
+        self, browser: BrowserController, page: Any, platform: str, *, context: str = "detail"
+    ) -> None:
+        """Discard results if an awaited operation exposed login/verification."""
+        try:
+            _ensure_page_platform(page, platform)
+            blocked = is_taobao_auth_url(page.url) or page_requires_user_verification("", page.url)
+            if not blocked:
+                body = page.locator("body")
+                if not await body.count():
+                    raise SafetyError("Page DOM unavailable after extraction operation.")
+                text = await body.inner_text(timeout=5_000)
+                _ensure_page_platform(page, platform)
+                blocked = await _requires_extraction_verification(page, text, platform, context=context)
+        except Exception as exc:
+            browser.pause_taobao_automation("extraction_inspection_failed")
+            raise SafetyError("Cannot inspect extraction page; results discarded.") from exc
+        if blocked:
+            browser.pause_taobao_automation("login_or_verification_required")
+            raise VerificationRequired("Login or verification detected during extraction; results discarded.")
+
     async def extract_current_page(self) -> dict[str, Any]:
-        snapshot = await self.browser.snapshot()
+        # Keep the original controller: a snapshot must not switch profiles.
+        browser = self.browser
+        snapshot = await browser.snapshot()
         platform = platform_from_url(snapshot["url"])
-        browser = self._browser_for_platform(platform)
         async with browser.lock:
             page = await browser.get_page()
-            detail = await extract_product_detail(page, platform)
+            _ensure_page_platform(page, platform)
+            blocked = (
+                (platform == "taobao" and snapshot.get("requires_user_verification", False))
+                or (platform == "taobao" and page_requires_user_verification(snapshot.get("text", ""), snapshot["url"]))
+                or page_requires_user_verification("", snapshot["url"])
+                or is_taobao_auth_url(snapshot["url"])
+                or is_taobao_auth_url(page.url)
+            )
+            if not blocked:
+                try:
+                    body = page.locator("body")
+                    if not await body.count():
+                        raise SafetyError("Current page DOM unavailable.")
+                    text = await body.inner_text(timeout=5_000)
+                    blocked = await _requires_extraction_verification(page, text, platform)
+                except Exception as exc:
+                    browser.pause_taobao_automation("current_page_inspection_failed")
+                    raise SafetyError("Cannot inspect current page; extraction stopped.") from exc
+            _ensure_page_platform(page, platform)
+            if blocked:
+                browser.pause_taobao_automation("login_or_verification_required")
+                detail = {
+                    "platform": platform,
+                    **_empty_detail_contract_fields("requires_user_verification", product_url=page.url),
+                }
+                if platform == "taobao":
+                    detail["parameter_evidence_status"] = "not_extracted"
+                return {
+                    "success": False,
+                    "requires_user_verification": True,
+                    "snapshot": snapshot,
+                    "product_like_data": detail,
+                    "detail_output_contract": _detail_output_contract(),
+                }
+            with _pause_on_extraction_failure(browser):
+                detail = await extract_product_detail(page, platform)
+            await self._assert_extraction_page(browser, page, platform)
         _apply_detail_output_contract(detail)
         return {
             "success": True,
@@ -167,12 +322,17 @@ class ShoppingBrowserService:
     async def _enrich_search_results_with_details(
         self, platform: str, items: list[dict[str, Any]]
     ) -> bool:
+        if platform == "taobao":
+            return False
+
         for item in items:
             url = item.get("url")
             if not isinstance(url, str) or not url:
                 continue
             try:
                 detail = await self.get_product_detail(url)
+            except VerificationRequired:
+                raise
             except Exception as exc:
                 item["detail_success"] = False
                 item["detail_error"] = str(exc)
@@ -185,14 +345,9 @@ class ShoppingBrowserService:
 
             item["detail_success"] = bool(detail.get("success"))
             if detail.get("requires_user_verification"):
-                item["detail_requires_user_verification"] = True
-                item["detail_message"] = detail.get("message", "")
-                item.update(
-                    _empty_detail_contract_fields(
-                        "requires_user_verification", product_url=str(url)
-                    )
+                raise VerificationRequired(
+                    detail.get("message") or "Manual verification required; bulk extraction stopped."
                 )
-                continue
 
             for key in (
                 "product_url",
@@ -216,16 +371,23 @@ class ShoppingBrowserService:
                 item["price"] = detail.get("price")
                 item["price_text"] = detail.get("price_text", "")
 
-    async def _prepare_product_detail_page(self, page: Any, platform: str) -> None:
-        await page.wait_for_timeout(self.settings.action_delay_ms)
-        for _ in range(2):
-            await page.mouse.wheel(0, 1000)
-            await page.wait_for_timeout(self.settings.action_delay_ms)
-
+    async def _prepare_product_detail_page(
+        self, page: Any, platform: str
+    ) -> None:
+        # JD still benefits from the legacy lazy-load scrolling.
+        # Taobao must not blindly scroll: repeated wheel events on pages
+        # without detail tabs are slow and can provoke site risk controls.
         if platform == "jd":
+            _ensure_page_platform(page, platform)
+            await page.wait_for_timeout(self.settings.action_delay_ms)
+            for _ in range(2):
+                _ensure_page_platform(page, platform)
+                await page.mouse.wheel(0, 1000)
+                await page.wait_for_timeout(self.settings.action_delay_ms)
             await self._prepare_jd_detail_page(page)
-        else:
-            await self._prepare_taobao_detail_page(page)
+            return
+
+        await self._prepare_taobao_detail_page(page)
 
     async def _prepare_jd_detail_page(self, page: Any) -> None:
         await self._click_first_available(
@@ -251,40 +413,39 @@ class ShoppingBrowserService:
         )
 
     async def _prepare_taobao_detail_page(self, page: Any) -> None:
-        await self._click_first_available(
-            page,
-            (
-                "text=/^(参数|商品参数|宝贝参数|规格参数)$/",
-                "button:has-text('参数')",
-                "a:has-text('参数')",
-                "[class*='parameter' i]",
-                "[class*='params' i]",
-            ),
-        )
-        await self._click_first_available(
-            page,
-            (
-                "text=/^(评价|宝贝评价|累计评价)$/",
-                "button:has-text('评价')",
-                "a:has-text('评价')",
-            ),
-        )
+        # Safe mode: do not scroll, click tabs, or expand content.
+        # Extract only DOM content already loaded by navigation.
+        return
 
     async def _click_first_available(
         self, page: Any, selectors: tuple[str, ...], *, scroll_after: bool = False
     ) -> None:
         for selector in selectors:
+            _ensure_page_platform(page, "jd")
             locator = page.locator(selector).first
             if not await locator.count():
                 continue
             try:
+                href = await locator.get_attribute("href")
+                target = urljoin(page.url, href) if href else page.url
+                if target.lower().startswith(("http://", "https://")):
+                    ensure_allowed_url(target)
+                    if platform_from_url(target) != "jd":
+                        raise SafetyError("JD detail control targets another platform.")
+                _ensure_page_platform(page, "jd")
                 await locator.click(timeout=2_000)
+                _ensure_page_platform(page, "jd")
                 await page.wait_for_timeout(self.settings.action_delay_ms)
+                _ensure_page_platform(page, "jd")
                 if scroll_after:
                     await page.mouse.wheel(0, 500)
                     await page.wait_for_timeout(self.settings.action_delay_ms)
+                    _ensure_page_platform(page, "jd")
                 return True
+            except SafetyError:
+                raise
             except Exception:
+                _ensure_page_platform(page, "jd")
                 continue
         return False
 
@@ -322,6 +483,10 @@ class ShoppingBrowserService:
         if platform == "jd":
             return await browser.navigate(
                 f"https://search.jd.com/Search?keyword={quote_plus(keyword)}"
+            )
+        if self.settings.taobao_search_mode != "mobile":
+            raise ValueError(
+                "Taobao Safe Mode requires TAOBAO_SEARCH_MODE=mobile."
             )
         if self.settings.taobao_search_mode == "mobile":
             return await browser.navigate(
@@ -371,6 +536,86 @@ class ShoppingBrowserService:
             return {**nav, "url": page.url}
 
 
+
+async def _requires_extraction_verification(page: Any, text: str, platform: str, *, context: str = "detail") -> bool:
+    """Keep Taobao strict; distinguish JD product copy from page-level challenges."""
+    url = page.url
+    if is_taobao_auth_url(url) or page_requires_user_verification("", url):
+        return True
+    if platform != "jd":
+        return page_requires_user_verification(text, url)
+    signals = await page.evaluate(
+        r"""
+        (context = "detail") => {
+          // JD verification context: product copy is not a page-level challenge.
+          const visible = (el) => !!el && el.getClientRects().length > 0;
+          const hasProduct = visible(document.querySelector('#name h1, .sku-name'))
+            && visible(document.querySelector('.summary-price .p-price, .summary-price-wrap .p-price'));
+          const hasSearch = context === 'search' && [...document.querySelectorAll('#J_goodsList .gl-item, li.gl-item')]
+            .some(card => visible(card) && visible(card.querySelector('.p-name a[href*="item.jd.com"]'))
+              && visible(card.querySelector('.p-price i, .p-price')));
+          const challenge = [...document.querySelectorAll(
+            'input[autocomplete="one-time-code"], input[name*="captcha"], iframe[src*="captcha"], #JDJRV-wrap, .JDJRV-wrap, .JDJRV-bigimg'
+          )].some(visible);
+          const outside = document.body?.cloneNode(true);
+          outside?.querySelectorAll(
+            context === 'search' ? '#J_goodsList .gl-item, li.gl-item, script, style, noscript, template' :
+            '#name, .sku-name, #detail, #comment, #comments-list, .comment-item, .J-detail-content, script, style, noscript, template'
+          ).forEach(el => el.remove());
+          return {
+            has_product_identity: hasProduct,
+            has_search_identity: hasSearch,
+            has_challenge_ui: challenge,
+            outside_product_text: (outside?.innerText || outside?.textContent || '').slice(0, 5000)
+          };
+        }
+        """,
+        context,
+    )
+    _ensure_page_platform(page, platform)
+    return (
+        page_requires_user_verification("", page.url)
+        or not isinstance(signals, dict)
+        or type(signals.get("has_search_identity" if context == "search" else "has_product_identity")) is not bool
+        or (
+            page_requires_user_verification(text, page.url)
+            and signals.get("has_search_identity" if context == "search" else "has_product_identity") is not True
+        )
+        or signals.get("has_challenge_ui") is not False
+        or not isinstance(signals.get("outside_product_text"), str)
+        or page_requires_user_verification(signals.get("outside_product_text", ""), page.url)
+    )
+
+def _canonical_detail_url(url: str) -> str:
+    """Normalize supported Taobao detail URLs to the full desktop detail page."""
+    parsed = urlparse(url)
+    host = (parsed.hostname or "").lower()
+
+    supported = (
+        (host == "item.taobao.com" and parsed.path == "/item.htm")
+        or
+        (host == "new.m.taobao.com" and parsed.path == "/detail.htm")
+    )
+
+    if not supported:
+        return url
+
+    # Validate all ID/SKU aliases before canonicalization drops query values.
+    # The validator checks conflicts even for its unknown/mobile URL fallback.
+    _product_identity(url)
+    query = parse_qs(parsed.query)
+
+    item_id = (query.get("id") or [None])[0]
+    sku_id = (query.get("skuId") or [None])[0]
+
+    if not item_id:
+        return url
+
+    parameters = {"id": item_id}
+    if sku_id:
+        parameters["skuId"] = sku_id
+    return "https://item.taobao.com/item.htm?" + urlencode(parameters)
+
 def _validate_platform(platform: str) -> str:
     normalized = platform.strip().lower()
     if normalized not in {"jd", "taobao"}:
@@ -379,7 +624,7 @@ def _validate_platform(platform: str) -> str:
 
 
 def platform_from_url(url: str) -> str:
-    host = (urlparse(url).hostname or "").lower()
+    host = (urlparse(url).hostname or "").lower().rstrip(".")
     if host == "jd.com" or host.endswith(".jd.com") or host.endswith(".360buy.com"):
         return "jd"
     if (
@@ -390,6 +635,12 @@ def platform_from_url(url: str) -> str:
     ):
         return "taobao"
     raise ValueError("URL must belong to JD, Taobao, or Tmall")
+
+
+def _ensure_page_platform(page: Any, platform: str) -> None:
+    ensure_allowed_url(page.url)
+    if platform_from_url(page.url) != platform:
+        raise SafetyError("Page platform changed; operation stopped without retry.")
 
 
 def _default_chrome_path() -> Path | None:
