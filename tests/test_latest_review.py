@@ -179,6 +179,10 @@ class SearchContextTests(unittest.IsolatedAsyncioTestCase):
     async def test_empty_search_without_risk_is_empty_success(self):
         self.page.url = 'https://search.jd.com/Search?keyword=fixture'
         self.locator.inner_text.return_value = ''
+        self.page.evaluate = AsyncMock(return_value={
+            'has_product_identity': False, 'has_search_identity': False,
+            'has_challenge_ui': False, 'outside_product_text': '',
+        })
         self.jd.get_page = AsyncMock(return_value=self.page)
         self.service._open_search_page = AsyncMock(return_value={'success': True})
         with patch('jd_taobao_mcp.service.extract_jd_search', new_callable=AsyncMock, return_value=[]):

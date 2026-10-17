@@ -141,6 +141,12 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
     async def test_jd_navigation_unchanged(self):
         url = "https://item.jd.com/123.html?foo=bar"
         self.page.url = url  # Simulate the requested JD navigation, not a Taobao redirect.
+        async def evaluate(script, *args):
+            if "JD verification context" in script:
+                return {"has_product_identity": True, "has_search_identity": False,
+                        "has_challenge_ui": False, "outside_product_text": ""}
+            return deepcopy(RAW)
+        self.page.evaluate = AsyncMock(side_effect=evaluate)
         await self.service.get_product_detail(url)
         self.browser.navigate.assert_awaited_once_with(url)
 

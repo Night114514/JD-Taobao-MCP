@@ -542,10 +542,8 @@ async def _requires_extraction_verification(page: Any, text: str, platform: str,
     url = page.url
     if is_taobao_auth_url(url) or page_requires_user_verification("", url):
         return True
-    if not page_requires_user_verification(text, url):
-        return False
     if platform != "jd":
-        return True
+        return page_requires_user_verification(text, url)
     signals = await page.evaluate(
         r"""
         (context = "detail") => {
@@ -578,7 +576,11 @@ async def _requires_extraction_verification(page: Any, text: str, platform: str,
     return (
         page_requires_user_verification("", page.url)
         or not isinstance(signals, dict)
-        or signals.get("has_search_identity" if context == "search" else "has_product_identity") is not True
+        or type(signals.get("has_search_identity" if context == "search" else "has_product_identity")) is not bool
+        or (
+            page_requires_user_verification(text, page.url)
+            and signals.get("has_search_identity" if context == "search" else "has_product_identity") is not True
+        )
         or signals.get("has_challenge_ui") is not False
         or not isinstance(signals.get("outside_product_text"), str)
         or page_requires_user_verification(signals.get("outside_product_text", ""), page.url)

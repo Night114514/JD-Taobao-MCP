@@ -125,6 +125,10 @@ class SearchInspectionTests(unittest.IsolatedAsyncioTestCase):
         await self.check_normal("taobao")
 
     async def test_normal_jd(self):
+        self.page.evaluate = AsyncMock(return_value={
+            "has_product_identity": False, "has_search_identity": False,
+            "has_challenge_ui": False, "outside_product_text": "",
+        })
         await self.check_normal("jd")
 
 

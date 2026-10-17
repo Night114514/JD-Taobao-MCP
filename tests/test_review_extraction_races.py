@@ -103,6 +103,12 @@ class ExtractionRaceTests(unittest.IsolatedAsyncioTestCase):
         browser.navigate = self.browser.navigate
         self.service.browser = browser
         self.page.url = "https://item.jd.com/123.html"
+        if operation in ("detail", "search"):
+            async def evaluate(script, *args):
+                return {"has_product_identity": True, "has_search_identity": True,
+                        "has_challenge_ui": False,
+                        "outside_product_text": self.page.locator.return_value.inner_text.return_value}
+            self.page.evaluate = AsyncMock(side_effect=evaluate)
         async def late(*args, **kwargs):
             self.page.locator.return_value.inner_text.return_value = "安全驗證"
             return [{"url": self.page.url}] if operation == "search" else {"platform": "jd", "url": self.page.url}

@@ -801,8 +801,10 @@ def _taobao_parameters_from_text(
     if not text:
         return []
 
-    parameter_heading = "\u53c2\u6570\u4fe1\u606f"
-    detail_heading = "\u56fe\u6587\u8be6\u60c5"
+    parameter_heading = re.compile(r"参数信息|商品参数|宝贝参数|规格参数")
+    section_boundary = re.compile(
+        r"图文详情|商品详情|用户评价|买家评价|" + parameter_heading.pattern
+    )
 
     expected_labels = (
         "\u9002\u7528\u7f51\u7edc\u7c7b\u578b",
@@ -822,32 +824,18 @@ def _taobao_parameters_from_text(
 
     # There can be more than one "parameter info" label:
     # one in the navigation bar and another above the actual data.
-    # Score every parameter-info -> graphic-detail region and keep
+    # Score each bounded parameter section and keep
     # the region containing the most real parameter labels.
     candidates: list[tuple[int, str]] = []
-    search_from = 0
-
-    while True:
-        section_start = text.find(parameter_heading, search_from)
-        if section_start < 0:
-            break
-
-        section_end = text.find(
-            detail_heading,
-            section_start + len(parameter_heading),
-        )
-
-        if section_end > section_start:
-            segment = text[
-                section_start + len(parameter_heading):section_end
-            ]
+    for heading in parameter_heading.finditer(text):
+        boundary = section_boundary.search(text, heading.end())
+        if boundary:
+            segment = text[heading.end():boundary.start()]
             score = sum(
                 1 for label in expected_labels
                 if label in segment
             )
             candidates.append((score, segment))
-
-        search_from = section_start + len(parameter_heading)
 
     if not candidates:
         return []
@@ -1122,8 +1110,17 @@ def _fallback_reviews_from_text(
     masked = r"[A-Za-z0-9_\u4e00-\u9fff]{1,12}\*{1,4}[A-Za-z0-9_\u4e00-\u9fff]{0,12}"
     pattern += rf"|(?<![\w*])(?P<masked_user>{masked})[ \t\r\n]+"
     if heading:
-        pattern += rf"|^(?P<line_user>[A-Za-z][A-Za-z0-9_]{{1,29}})[ \t]*\r?$\n"
-    matches = list(re.finditer(pattern, segment, re.M))
+        pattern += rf"|^(?P<line_user>[A-Za-z][A-Za-z0-9_]{{1,29}}|[\u4e00-\u9fff]{{2,4}})[ \t]*\r?$\n"
+    matches = []
+    for match in re.finditer(pattern, segment, re.M):
+        line_user = match.groupdict().get("line_user")
+        # Short review prose and section labels are not new Chinese reviewers.
+        if line_user and re.fullmatch(r"[\u4e00-\u9fff]{2,4}", line_user) and (
+            _review_sentiment(line_user)
+            or line_user in {"商品描述", "产品描述", "商品介绍", "产品介绍", "商品说明", "产品说明"}
+        ):
+            continue
+        matches.append(match)
 
     output: list[dict[str, Any]] = []
     seen: set[tuple[str, str]] = set()
